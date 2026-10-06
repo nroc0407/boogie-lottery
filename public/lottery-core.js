@@ -43,11 +43,19 @@ export function periodLabel(settings) {
   return `최근 ${settings.periodValue ?? 6}${settings.periodUnit === "days" ? "일" : "개월"}`;
 }
 
+export function activityCriteria(settings) {
+  return settings.activityMode === "total"
+    ? { minPosts: 0, minComments: 0, minTotal: settings.minTotal ?? 0 }
+    : { minPosts: settings.minPosts ?? 0, minComments: settings.minComments ?? 0, minTotal: 0 };
+}
+
 export function criteriaLabel(settings) {
+  const { minPosts, minComments, minTotal } = activityCriteria(settings);
+  if (settings.activityMode === "total") return minTotal > 0 ? `글+댓글 합계 ${minTotal}개 이상` : "합계 기준 없음";
   const criteria = [];
-  if (settings.minPosts > 0) criteria.push(`글 ${settings.minPosts}개 이상`);
-  if (settings.minComments > 0) criteria.push(`댓글 ${settings.minComments}개 이상`);
-  return criteria.length ? criteria.join(" · ") + (criteria.length > 1 ? " (모두 충족)" : "") : "활동 기준 없음";
+  if (minPosts > 0) criteria.push(`글 ${minPosts}개 이상`);
+  if (minComments > 0) criteria.push(`댓글 ${minComments}개 이상`);
+  return criteria.length ? "개별 기준: " + criteria.join(" · ") + (criteria.length > 1 ? " (모두 충족)" : "") : "개별 기준 없음";
 }
 
 export function collectParticipants(comments, settings, postAuthorKey = "") {
@@ -65,7 +73,7 @@ export function collectParticipants(comments, settings, postAuthorKey = "") {
     else if (!settings.includeGuests && comment.identityType === "ip") exclusion = "유동 제외 설정";
     people.set(key, { key, name: comment.authorName, identityType: comment.identityType, authorType: comment.authorType,
       firstCommentId: comment.id, firstCommentPage: comment.sourcePage || 1, commentCount: 1, content: comment.content, exclusion,
-      postCount: 0, activityCommentCount: 0, commentsChecked: false, lastActivity: 0, evidenceUrl: "",
+      postCount: 0, activityCommentCount: 0, totalActivityCount: 0, commentsChecked: false, lastActivity: 0, evidenceUrl: "",
       status: exclusion ? "excluded" : "pending", reason: exclusion || "활동 확인 대기" });
   }
   return [...people.values()];
@@ -73,8 +81,7 @@ export function collectParticipants(comments, settings, postAuthorKey = "") {
 
 export function evaluateParticipants(participants, counts, minimum, complete) {
   const rules = typeof minimum === "number" ? { minPosts: minimum, minComments: 0, periodValue: 6 } : minimum;
-  const minPosts = rules.minPosts ?? 0;
-  const minComments = rules.minComments ?? 0;
+  const { minPosts, minComments, minTotal } = activityCriteria(rules);
   const period = periodLabel(rules);
   return participants.map((person) => {
     if (person.exclusion) return { ...person };
@@ -83,18 +90,22 @@ export function evaluateParticipants(participants, counts, minimum, complete) {
     const commentCount = activity.comments || 0;
     const postsMet = posts >= minPosts;
     const commentsMet = commentCount >= minComments;
+    const total = posts + commentCount;
+    const totalMet = total >= minTotal;
     const postsFailed = !postsMet && complete;
     const commentsFailed = !commentsMet && activity.commentsComplete;
-    const enough = postsMet && commentsMet;
+    const totalFailed = !totalMet && complete && activity.commentsComplete;
+    const enough = postsMet && commentsMet && totalMet;
     let reason;
     if (postsFailed) reason = posts === 0 ? `${period} 작성글 없음` : `작성글 기준 미달 (${posts}/${minPosts}개)`;
     else if (commentsFailed) reason = commentCount === 0 ? `${period} 작성댓글 없음` : `작성댓글 기준 미달 (${commentCount}/${minComments}개)`;
-    else if (enough) reason = minPosts || minComments ? `활동 기준 충족 (${criteriaLabel(rules)})` : "활동 검사 사용 안 함";
-    else if (activity.commentError && !commentsMet) reason = activity.commentError;
-    else reason = `${period} ${postsMet ? "댓글" : "작성글"} 활동 확인 중`;
-    return { ...person, postCount: posts, activityCommentCount: commentCount, commentsChecked: Boolean(activity.commentsChecked),
+    else if (totalFailed) reason = `글+댓글 합계 미달 (${total}/${minTotal}개)`;
+    else if (enough) reason = minPosts || minComments || minTotal ? `활동 기준 충족 (${criteriaLabel(rules)})` : "활동 검사 사용 안 함";
+    else if (activity.commentError && (!commentsMet || !totalMet)) reason = activity.commentError;
+    else reason = `${period} ${!postsMet ? "작성글" : !commentsMet ? "댓글" : "글+댓글 합계"} 활동 확인 중`;
+    return { ...person, postCount: posts, activityCommentCount: commentCount, totalActivityCount: total, commentsChecked: Boolean(activity.commentsChecked),
       commentsComplete: Boolean(activity.commentsComplete), lastActivity: activity.latest, evidenceUrl: activity.url,
-      status: postsFailed || commentsFailed ? "excluded" : enough ? "eligible" : "pending", reason };
+      status: postsFailed || commentsFailed || totalFailed ? "excluded" : enough ? "eligible" : "pending", reason };
   });
 }
 

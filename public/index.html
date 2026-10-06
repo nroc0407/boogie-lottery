@@ -21,11 +21,16 @@
             <input id="post-url" type="url" placeholder="https://gall.dcinside.com/…" required maxlength="2048" autocomplete="off" spellcheck="false">
             <button id="example-button" class="text-button" type="button">예시</button>
           </div>
-          <div class="number-controls">
+          <div class="mode-controls" role="radiogroup" aria-label="활동 기준 모드">
+            <label><input type="radio" name="activity-mode" value="separate" checked>최소 글·댓글</label>
+            <label><input type="radio" name="activity-mode" value="total">글댓합</label>
+          </div>
+          <div class="number-controls" data-mode="separate">
             <div class="field"><label for="winner-count">당첨 인원</label><div class="input-group"><input id="winner-count" type="number" min="1" max="100" step="1" value="1" required><span>명</span></div></div>
             <div class="field"><label for="period-value">평가기간</label><div class="input-group period-control"><input id="period-value" type="number" min="1" max="24" step="1" value="6" required aria-label="평가기간 수"><select id="period-unit" aria-label="평가기간 단위"><option value="months">개월</option><option value="days">일</option></select></div></div>
-            <div class="field"><label for="min-posts">최소 글</label><div class="input-group"><input id="min-posts" type="number" min="0" max="1000" step="1" value="3" required aria-describedby="activity-help"><span>개</span></div></div>
-            <div class="field"><label for="min-comments">최소 댓글</label><div class="input-group"><input id="min-comments" type="number" min="0" max="1000" step="1" value="0" required aria-describedby="activity-help"><span>개</span></div></div>
+            <div class="field" data-criterion-mode="separate"><label for="min-posts">최소 글</label><div class="input-group"><input id="min-posts" type="number" min="0" max="1000" step="1" value="3" required aria-describedby="activity-help"><span>개</span></div></div>
+            <div class="field" data-criterion-mode="separate"><label for="min-comments">최소 댓글</label><div class="input-group"><input id="min-comments" type="number" min="0" max="1000" step="1" value="0" required aria-describedby="activity-help"><span>개</span></div></div>
+            <div class="field" data-criterion-mode="total" hidden><label for="min-total">글+댓글 합</label><div class="input-group"><input id="min-total" type="number" min="0" max="2000" step="1" value="0" required disabled aria-describedby="activity-help"><span>개</span></div></div>
           </div>
           <div class="settings-bottom">
             <details class="extra-options">
@@ -40,7 +45,7 @@
                 </div>
               </div>
             </details>
-            <small id="activity-help">글·댓글 모두 충족 / 0 = 검사 끄기</small>
+            <small id="activity-help">글·댓글 모두 충족 / 0 = 해당 기준 끄기</small>
           </div>
           <div class="run-actions"><button id="start-button" class="primary-button" type="submit"><span id="start-label">추첨 시작</span></button><button id="stop-button" type="button" hidden>중단</button></div>
         </fieldset>
@@ -65,7 +70,7 @@
         <fieldset id="winner-section" class="winner-section" hidden aria-live="polite"><legend>당첨자</legend><div id="winner-list" class="winner-list"></div><p id="draw-detail"></p></fieldset>
         <details class="participants-panel">
           <summary>참가자 <span id="participant-count"></span></summary>
-          <div class="table-wrap"><table><thead><tr><th>참가자</th><th>유형</th><th>참여 댓글</th><th>글</th><th>댓글</th><th>최근 활동</th><th>판정</th></tr></thead><tbody id="participant-table"></tbody></table></div>
+          <div class="table-wrap"><table><thead><tr><th>참가자</th><th>유형</th><th>참여 댓글</th><th>글</th><th>댓글</th><th>확인 합계</th><th>최근 활동</th><th>판정</th></tr></thead><tbody id="participant-table"></tbody></table></div>
           <p id="participants-empty">수집 중</p>
         </details>
         <div class="report-actions"><button id="redraw-button" type="button" disabled>다시 추첨</button><button id="copy-result" type="button" disabled>결과 복사</button><button id="export-csv" type="button" disabled>CSV 저장</button></div>

@@ -79,10 +79,21 @@ function setRunning(value) {
   $("stop-button").hidden = !value;
   $("stop-button").disabled = !value;
   for (const input of $("analysis-form").querySelectorAll("input, select")) input.disabled = value;
+  syncActivityMode();
   $("example-button").disabled = value;
   $("start-label").textContent = value ? "처리 중" : "추첨 시작";
   $("redraw-button").disabled = value || !completed || participants.some((p) => p.status === "pending")
     || participants.filter((p) => p.status === "eligible").length < (settings?.winnerCount || 1);
+}
+function syncActivityMode() {
+  const mode = $("analysis-form").querySelector('input[name="activity-mode"]:checked').value;
+  document.querySelector(".number-controls").dataset.mode = mode;
+  for (const field of document.querySelectorAll("[data-criterion-mode]")) {
+    const inactive = field.dataset.criterionMode !== mode;
+    field.hidden = inactive;
+    for (const input of field.querySelectorAll("input")) input.disabled = Boolean(controller) || inactive;
+  }
+  $("activity-help").textContent = mode === "total" ? "글+댓글 합계만 평가 / 0 = 활동 검사 끄기" : "글·댓글 모두 충족 / 0 = 해당 기준 끄기";
 }
 function setPhase(value) {
   phase = value;
@@ -112,17 +123,21 @@ async function api(path, body, signal) {
 }
 function settingsFromForm() {
   const target = parsePostUrl($("post-url").value);
-  const minPosts = Number($("min-posts").value);
-  const minComments = Number($("min-comments").value);
+  const activityMode = $("analysis-form").querySelector('input[name="activity-mode"]:checked').value;
+  if (!["separate", "total"].includes(activityMode)) throw new Error("활동 기준 모드를 선택해주세요.");
+  const minPosts = activityMode === "separate" ? Number($("min-posts").value) : 0;
+  const minComments = activityMode === "separate" ? Number($("min-comments").value) : 0;
+  const minTotal = activityMode === "total" ? Number($("min-total").value) : 0;
   const periodValue = Number($("period-value").value);
   const periodUnit = $("period-unit").value;
   const winnerCount = Number($("winner-count").value);
   for (const value of [minPosts, minComments]) {
     if (!Number.isInteger(value) || value < 0 || value > 1000) throw new Error("최소 글·댓글 수는 0~1,000개로 설정해주세요.");
   }
+  if (!Number.isInteger(minTotal) || minTotal < 0 || minTotal > 2000) throw new Error("글+댓글 합계는 0~2,000개로 설정해주세요.");
   evaluationCutoff(Date.now(), periodValue, periodUnit);
   if (!Number.isInteger(winnerCount) || winnerCount < 1 || winnerCount > 100) throw new Error("당첨 인원은 1~100명으로 설정해주세요.");
-  return { ...target, minPosts, minComments, periodValue, periodUnit, winnerCount, includeGuests: $("include-guests").checked,
+  return { ...target, activityMode, minPosts, minComments, minTotal, periodValue, periodUnit, winnerCount, includeGuests: $("include-guests").checked,
     includeReplies: $("include-replies").checked, excludeAuthor: $("exclude-author").checked, keyword: $("keyword").value.trim() };
 }
 async function run(event) {
@@ -188,9 +203,9 @@ async function run(event) {
       completed = true;
       throw new Error("참가 조건을 통과한 댓글 작성자가 없습니다. 유동·대댓글·키워드 설정을 확인해주세요.");
     }
-    if (settings.minPosts > 0) await scanPostActivity(sessionKey, signal, checkable);
+    if (settings.minPosts > 0 || settings.minTotal > 0) await scanPostActivity(sessionKey, signal, checkable);
     refreshParticipants();
-    if (settings.minComments > 0) await scanCommentActivity(sessionKey, signal);
+    if (settings.minComments > 0 || settings.minTotal > 0) await scanCommentActivity(sessionKey, signal);
     refreshParticipants();
     completed = true;
     render();
@@ -222,7 +237,8 @@ async function scanPostActivity(sessionKey, signal, checkable) {
   let emptyStreak = 0;
   const seenPosts = new Set();
   const keys = new Set(checkable.map((person) => person.key));
-  const allMet = () => checkable.every((person) => activityFor(person.key).count >= settings.minPosts);
+  const postTarget = Math.max(settings.minPosts, settings.minTotal);
+  const allMet = () => checkable.every((person) => activityFor(person.key).count >= postTarget);
   for (let startPage = 1; startPage <= MAX_PAGES; startPage += 5) {
     status("작성글 조회 중", "loading", startPage + "p부터");
     const data = await api("/api/pages", { galleryId: post.id, galleryType: post.type, sessionKey, startPage, count: Math.min(5, MAX_PAGES - startPage + 1) }, signal);
@@ -248,7 +264,7 @@ async function scanPostActivity(sessionKey, signal, checkable) {
       if (boundary || emptyStreak >= 2 || allMet()) break;
     }
     appendLog("작성글 " + number(scanPages) + "p 확인", "info",
-      "기준 충족 " + checkable.filter((person) => activityFor(person.key).count >= settings.minPosts).length + "/" + checkable.length + "명"
+      "글 확인 목표 충족 " + checkable.filter((person) => activityFor(person.key).count >= postTarget).length + "/" + checkable.length + "명"
       + (oldest ? " · " + date(oldest) + "까지" : ""));
     if (boundary || emptyStreak >= 2 || allMet()) break;
     if (startPage + 5 <= MAX_PAGES) await wait(350, signal);
@@ -259,6 +275,8 @@ async function scanCommentActivity(sessionKey, signal) {
   for (let index = 0; index < candidates.length; index += 1) {
     const person = candidates[index];
     const activity = activityFor(person.key);
+    const commentTarget = Math.max(settings.minComments, settings.minTotal - activity.count, 0);
+    if (activity.comments >= commentTarget) continue;
     if (person.identityType !== "uid") {
       activity.commentError = "유동·미식별 참가자의 댓글 활동을 확인할 수 없어 보류합니다.";
       appendLog(person.name + " / 댓글 활동 확인 불가", "error");
@@ -269,12 +287,12 @@ async function scanCommentActivity(sessionKey, signal) {
     let malformed = false;
     const seenComments = new Set();
     try {
-      while (nextPage && activity.comments < settings.minComments) {
+      while (nextPage && activity.comments < commentTarget) {
         if (nextPage > MAX_PAGES) { activity.commentError = "갤로그 2,000페이지 제한으로 댓글 활동이 미확인입니다."; break; }
         status(person.name + " / 댓글 조회", "loading", (index + 1) + "/" + candidates.length + "명 · " + nextPage + "p");
         const data = await api("/api/comment-activity", { postUrl: post.url, sessionKey, authorKey: person.key,
           sourcePage: person.firstCommentPage, startPage: nextPage,
-          count: Math.min(settings.minComments - activity.comments > 40 ? 3 : 1, MAX_PAGES - nextPage + 1) }, signal);
+          count: Math.min(commentTarget - activity.comments > 40 ? 3 : 1, MAX_PAGES - nextPage + 1) }, signal);
         if (data.unavailableReason) { activity.commentError = data.unavailableReason; break; }
         if (!Array.isArray(data.pages) || !data.pages.length) throw new Error("댓글 활동 페이지 정보가 없습니다.");
         for (const page of data.pages) {
@@ -298,16 +316,17 @@ async function scanCommentActivity(sessionKey, signal) {
             nextPage = null;
           }
           refreshParticipants();
-          if (!nextPage || activity.comments >= settings.minComments) break;
+          if (!nextPage || activity.comments >= commentTarget) break;
         }
-        if (nextPage && activity.comments < settings.minComments) await wait(650, signal);
+        if (nextPage && activity.comments < commentTarget) await wait(650, signal);
       }
     } catch (error) {
       if (error.name === "AbortError") throw error;
       activity.commentError = error.message;
     }
-    appendLog(person.name + " / " + (activity.commentError ? activity.commentError : "댓글 " + activity.comments + "/" + settings.minComments + "개"),
-      activity.commentError ? "error" : activity.comments >= settings.minComments ? "success" : "info");
+    appendLog(person.name + " / " + (activity.commentError ? activity.commentError : "댓글 " + activity.comments + "/" + commentTarget + "개")
+      + (settings.minTotal > 0 ? " / 합계 " + (activity.count + activity.comments) + "/" + settings.minTotal + "개" : ""),
+      activity.commentError ? "error" : activity.comments >= commentTarget ? "success" : "info");
     refreshParticipants();
     if (index + 1 < candidates.length) await wait(650, signal);
   }
@@ -344,8 +363,10 @@ function renderRows() {
     nameLink.textContent = person.name;
     nameCell.append(nameLink);
     const cells = [person.identityType === "uid" ? "계정" : person.identityType === "ip" ? "유동" : "미식별",
-      person.commentCount + "개", settings.minPosts > 0 ? number(person.postCount) : "—",
-      person.commentsChecked ? number(person.activityCommentCount) : "—", date(person.lastActivity)];
+      person.commentCount + "개", !person.exclusion && (settings.minPosts > 0 || settings.minTotal > 0) ? number(person.postCount) : "—",
+      person.commentsChecked ? number(person.activityCommentCount) : "—",
+      !person.exclusion && (settings.minPosts > 0 || settings.minComments > 0 || settings.minTotal > 0) ? number(person.totalActivityCount) : "—",
+      date(person.lastActivity)];
     row.append(nameCell);
     for (const value of cells) { const cell = document.createElement("td"); cell.textContent = value; row.append(cell); }
     const resultCell = document.createElement("td");
@@ -378,8 +399,9 @@ function renderWinners() {
     link.target = "_blank";
     link.rel = "noopener noreferrer";
     const detail = document.createElement("small");
-    detail.textContent = (settings.minPosts > 0 ? "작성글 " + person.postCount + "개 · " : "")
-      + (settings.minComments > 0 ? "작성댓글 " + person.activityCommentCount + "개 · " : "") + "참여 댓글 " + person.commentCount + "개";
+    detail.textContent = (settings.minPosts > 0 || settings.minTotal > 0 ? "글 " + person.postCount + "개 · " : "")
+      + (person.commentsChecked ? "댓글 " + person.activityCommentCount + "개 · " : "")
+      + (settings.minTotal > 0 ? "합계 " + person.totalActivityCount + "개 · " : "") + "참여 " + person.commentCount + "개";
     article.append(place, link, detail);
     list.append(article);
   });
@@ -415,11 +437,14 @@ function exportCsv() {
     if (/^[=+\-@\t\r]/.test(str)) str = "'" + str;
     return '"' + str.replace(/"/g, '""') + '"';
   };
-  const rows = [["name", "comment_no", "entry_comment_count", "confirmed_posts", "confirmed_comments", "status", "reason", "winner", "comment_url",
-    "assessment_start", "assessment_end", "period_value", "period_unit", "min_posts", "min_comments"],
-    ...participants.map((person) => [person.name, person.firstCommentId, person.commentCount, person.postCount,
-      person.commentsChecked ? person.activityCommentCount : "", person.status, person.reason, winnerKeys.has(person.key) ? "Y" : "N", commentLink(person),
-      new Date(cutoff).toISOString(), new Date(asOf).toISOString(), settings.periodValue, settings.periodUnit, settings.minPosts, settings.minComments])];
+  const rows = [["name", "comment_no", "entry_comment_count", "confirmed_posts", "confirmed_comments", "confirmed_total", "status", "reason", "winner", "comment_url",
+    "assessment_start", "assessment_end", "period_value", "period_unit", "activity_mode", "min_posts", "min_comments", "min_total"],
+    ...participants.map((person) => [person.name, person.firstCommentId, person.commentCount,
+      !person.exclusion && (settings.minPosts > 0 || settings.minTotal > 0) ? person.postCount : "",
+      person.commentsChecked ? person.activityCommentCount : "",
+      !person.exclusion && (settings.minPosts > 0 || settings.minComments > 0 || settings.minTotal > 0) ? person.totalActivityCount : "",
+      person.status, person.reason, winnerKeys.has(person.key) ? "Y" : "N", commentLink(person),
+      new Date(cutoff).toISOString(), new Date(asOf).toISOString(), settings.periodValue, settings.periodUnit, settings.activityMode, settings.minPosts, settings.minComments, settings.minTotal])];
   const url = URL.createObjectURL(new Blob(["\uFEFF" + rows.map((row) => row.map(safe).join(",")).join("\r\n")], { type: "text/csv;charset=utf-8" }));
   const anchor = document.createElement("a");
   anchor.href = url;
@@ -443,6 +468,7 @@ $("redraw-button").addEventListener("click", redraw);
 $("export-csv").addEventListener("click", exportCsv);
 $("copy-result").addEventListener("click", copyResult);
 $("example-button").addEventListener("click", () => { $("post-url").value = "https://gall.dcinside.com/mgallery/board/view/?id=aidevelop&no=3524"; });
+for (const input of $("analysis-form").querySelectorAll('input[name="activity-mode"]')) input.addEventListener("change", syncActivityMode);
 $("period-unit").addEventListener("change", () => {
   const maximum = $("period-unit").value === "days" ? 730 : 24;
   $("period-value").max = String(maximum);
