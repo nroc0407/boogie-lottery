@@ -26,6 +26,30 @@ export function sixMonthCutoff(asOf) {
   return Date.UTC(year, month, Math.min(kst.getUTCDate(), lastDay), kst.getUTCHours(), kst.getUTCMinutes(), kst.getUTCSeconds(), kst.getUTCMilliseconds()) - 9 * 3_600_000;
 }
 
+export function evaluationCutoff(asOf, value = 6, unit = "months") {
+  if (!Number.isFinite(Number(asOf)) || !Number.isInteger(value) || value < 1
+    || (unit === "months" ? value > 24 : unit === "days" ? value > 730 : true)) {
+    throw new Error("평가기간은 1~24개월 또는 1~730일로 설정해주세요.");
+  }
+  const kst = new Date(Number(asOf) + 9 * 3_600_000);
+  const year = kst.getUTCFullYear();
+  const month = kst.getUTCMonth();
+  if (unit === "days") return Date.UTC(year, month, kst.getUTCDate() - value + 1) - 9 * 3_600_000;
+  const lastDay = new Date(Date.UTC(year, month - value + 1, 0)).getUTCDate();
+  return Date.UTC(year, month - value, Math.min(kst.getUTCDate(), lastDay)) - 9 * 3_600_000;
+}
+
+export function periodLabel(settings) {
+  return `최근 ${settings.periodValue ?? 6}${settings.periodUnit === "days" ? "일" : "개월"}`;
+}
+
+export function criteriaLabel(settings) {
+  const criteria = [];
+  if (settings.minPosts > 0) criteria.push(`글 ${settings.minPosts}개 이상`);
+  if (settings.minComments > 0) criteria.push(`댓글 ${settings.minComments}개 이상`);
+  return criteria.length ? criteria.join(" · ") + (criteria.length > 1 ? " (모두 충족)" : "") : "활동 기준 없음";
+}
+
 export function collectParticipants(comments, settings, postAuthorKey = "") {
   const people = new Map();
   const keyword = String(settings.keyword || "").trim().toLocaleLowerCase("ko-KR");
@@ -40,20 +64,37 @@ export function collectParticipants(comments, settings, postAuthorKey = "") {
     else if (settings.excludeAuthor && key === postAuthorKey) exclusion = "게시글 작성자";
     else if (!settings.includeGuests && comment.identityType === "ip") exclusion = "유동 제외 설정";
     people.set(key, { key, name: comment.authorName, identityType: comment.identityType, authorType: comment.authorType,
-      firstCommentId: comment.id, commentCount: 1, content: comment.content, exclusion,
-      postCount: 0, lastActivity: 0, evidenceUrl: "", status: exclusion ? "excluded" : "pending", reason: exclusion || "활동 확인 대기" });
+      firstCommentId: comment.id, firstCommentPage: comment.sourcePage || 1, commentCount: 1, content: comment.content, exclusion,
+      postCount: 0, activityCommentCount: 0, commentsChecked: false, lastActivity: 0, evidenceUrl: "",
+      status: exclusion ? "excluded" : "pending", reason: exclusion || "활동 확인 대기" });
   }
   return [...people.values()];
 }
 
 export function evaluateParticipants(participants, counts, minimum, complete) {
+  const rules = typeof minimum === "number" ? { minPosts: minimum, minComments: 0, periodValue: 6 } : minimum;
+  const minPosts = rules.minPosts ?? 0;
+  const minComments = rules.minComments ?? 0;
+  const period = periodLabel(rules);
   return participants.map((person) => {
     if (person.exclusion) return { ...person };
     const activity = counts.get(person.key) || { count: 0, latest: 0, url: "" };
-    const enough = activity.count >= minimum;
-    return { ...person, postCount: activity.count, lastActivity: activity.latest, evidenceUrl: activity.url,
-      status: enough ? "eligible" : complete ? "excluded" : "pending",
-      reason: enough ? `활동 기준 충족 (최소 ${minimum}개)` : !complete ? "6개월 활동 확인 중" : activity.count === 0 ? "최근 6개월 작성글 없음" : `활동 기준 미달 (${activity.count}/${minimum}개)` };
+    const posts = activity.count || 0;
+    const commentCount = activity.comments || 0;
+    const postsMet = posts >= minPosts;
+    const commentsMet = commentCount >= minComments;
+    const postsFailed = !postsMet && complete;
+    const commentsFailed = !commentsMet && activity.commentsComplete;
+    const enough = postsMet && commentsMet;
+    let reason;
+    if (postsFailed) reason = posts === 0 ? `${period} 작성글 없음` : `작성글 기준 미달 (${posts}/${minPosts}개)`;
+    else if (commentsFailed) reason = commentCount === 0 ? `${period} 작성댓글 없음` : `작성댓글 기준 미달 (${commentCount}/${minComments}개)`;
+    else if (enough) reason = minPosts || minComments ? `활동 기준 충족 (${criteriaLabel(rules)})` : "활동 검사 사용 안 함";
+    else if (activity.commentError && !commentsMet) reason = activity.commentError;
+    else reason = `${period} ${postsMet ? "댓글" : "작성글"} 활동 확인 중`;
+    return { ...person, postCount: posts, activityCommentCount: commentCount, commentsChecked: Boolean(activity.commentsChecked),
+      commentsComplete: Boolean(activity.commentsComplete), lastActivity: activity.latest, evidenceUrl: activity.url,
+      status: postsFailed || commentsFailed ? "excluded" : enough ? "eligible" : "pending", reason };
   });
 }
 

@@ -25,9 +25,14 @@
           <div class="url-help"><p class="field-help">일반 · 마이너 · 미니 갤러리 지원</p><button id="example-button" type="button">예시 주소 넣기</button></div>
           <div class="number-controls">
             <div><label class="field-label" for="winner-count">당첨 인원</label><div class="page-count-wrap"><input id="winner-count" type="number" min="1" max="100" step="1" value="1" required><span>명</span></div></div>
-            <div><label class="field-label" for="min-posts">최소 작성글 수</label><div class="page-count-wrap"><input id="min-posts" type="number" min="1" max="100" step="1" value="3" required><span>개</span></div></div>
+            <div><label class="field-label" for="period-value">평가기간</label><div class="page-count-wrap period-control"><input id="period-value" type="number" min="1" max="24" step="1" value="6" required aria-describedby="period-help"><select id="period-unit" aria-label="평가기간 단위"><option value="months">개월</option><option value="days">일</option></select></div></div>
           </div>
-          <p class="field-help">최근 6개월 · 나눔 게시글 자체는 활동에 포함하지 않습니다.</p>
+          <p id="period-help" class="field-help">최근 1~24개월 또는 1~730일. 일 단위는 오늘을 포함합니다.</p>
+          <div class="number-controls activity-controls">
+            <div><label class="field-label" for="min-posts">최소 작성글 수</label><div class="page-count-wrap"><input id="min-posts" type="number" min="0" max="1000" step="1" value="3" required aria-describedby="activity-help"><span>개</span></div></div>
+            <div><label class="field-label" for="min-comments">최소 작성댓글 수</label><div class="page-count-wrap"><input id="min-comments" type="number" min="0" max="1000" step="1" value="0" required aria-describedby="activity-help"><span>개</span></div></div>
+          </div>
+          <p id="activity-help" class="field-help">글·댓글 기준을 모두 충족해야 합니다. 0개는 해당 검사 끄기. 나눔 글과 참여 댓글은 활동에서 제외합니다.</p>
           <label class="field-label" for="keyword">참여 댓글 키워드 <small>선택</small></label>
           <input id="keyword" class="url-input keyword-input" type="text" placeholder="비워두면 모든 댓글" maxlength="80" autocomplete="off">
           <div class="checkbox-options">
@@ -41,15 +46,15 @@
           <div class="request-note"><span class="request-note-icon" aria-hidden="true">↳</span><span>중복 댓글은 1명으로 참여합니다. 미확인 참가자가 있으면 추첨을 보류합니다.</span></div>
         </form>
         <section class="privacy-card"><div class="privacy-icon" aria-hidden="true">⌑</div><div><h2>현재 탭에서 추첨</h2><p>계정 ID·IP는 임시 식별값으로 바꾸고, 결과는 현재 탭에만 보관합니다. 댓글을 작성하거나 쿠폰을 보내지는 않습니다.</p></div></section>
-        <div class="sidebar-footer">부기 추첨자 <span>·</span> 2.0.0</div>
+        <div class="sidebar-footer">부기 추첨자 <span>·</span> 2.1.0</div>
       </aside>
       <main class="main-content">
         <div id="status-banner" class="status-banner" role="status" aria-live="polite" hidden><span class="status-spinner" aria-hidden="true"></span><span id="status-text"></span><span id="status-pages" class="status-pages"></span></div>
         <section id="welcome" class="welcome-view">
           <div class="welcome-overline"><span class="overline-line"></span> ONE LINK / ONE BURGER</div>
-          <div class="welcome-grid"><div class="welcome-copy"><h2>주소 하나로,<br><span>오늘의 부기.</span></h2><p>나눔 글의 댓글을 모으고, 최근 반년 활동을 확인하고,<br>참여한 사람 중 당첨자를 뽑습니다.</p></div><div class="burger-art" aria-hidden="true"><span>🍔</span><small>GOOD BURGER<br>GOOD BOOGIE</small></div></div>
+          <div class="welcome-grid"><div class="welcome-copy"><h2>주소 하나로,<br><span>오늘의 부기.</span></h2><p>나눔 글의 댓글을 모으고, 정한 기간의 글·댓글 활동을 확인하고,<br>참여한 사람 중 당첨자를 뽑습니다.</p></div><div class="burger-art" aria-hidden="true"><span>🍔</span><small>GOOD BURGER<br>GOOD BOOGIE</small></div></div>
           <div class="welcome-rule"></div>
-          <div class="feature-strip"><article><span class="feature-index">01</span><div><h3>댓글 참가자 확인</h3><p>중복 참여는 한 명으로</p></div></article><article><span class="feature-index">02</span><div><h3>최근 6개월 활동 검사</h3><p>활동 없는·적은 계정 제외</p></div></article><article><span class="feature-index">03</span><div><h3>당첨자 자동 추첨</h3><p>통과 후보에게 같은 확률</p></div></article></div>
+          <div class="feature-strip"><article><span class="feature-index">01</span><div><h3>댓글 참가자 확인</h3><p>중복 참여는 한 명으로</p></div></article><article><span class="feature-index">02</span><div><h3>기간·활동 기준 설정</h3><p>글·댓글 최소 수 직접 조절</p></div></article><article><span class="feature-index">03</span><div><h3>당첨자 자동 추첨</h3><p>통과 후보에게 같은 확률</p></div></article></div>
           <div class="welcome-footnote"><span>GALLSCOPE INSIDE</span><span>AI 없음 · 결과 서버 저장 없음</span></div>
         </section>
         <section id="results" class="results-view" hidden>
@@ -68,7 +73,7 @@
           </section>
           <article class="panel participants-panel">
             <div class="feed-heading"><div><span class="eyebrow">ENTRANTS &amp; ACTIVITY</span><h3>댓글 참가자 <span id="participant-count" class="panel-count"></span></h3></div><div class="report-actions"><button id="redraw-button" class="quiet-button" type="button" disabled>다시 추첨 ↻</button><button id="copy-result" class="quiet-button" type="button" disabled>당첨 결과 복사</button><button id="export-csv" class="quiet-button" type="button" disabled>결과 CSV ↓</button></div></div>
-            <div class="table-wrap"><table><thead><tr><th>참가자 / 댓글 보기</th><th>유형</th><th>댓글</th><th>확인 작성글</th><th>마지막 활동</th><th>판정 / 사유</th></tr></thead><tbody id="participant-table"></tbody></table></div>
+            <div class="table-wrap"><table><thead><tr><th>참가자 / 댓글 보기</th><th>유형</th><th>참여 댓글</th><th>확인 작성글</th><th>확인 작성댓글</th><th>마지막 활동</th><th>판정 / 사유</th></tr></thead><tbody id="participant-table"></tbody></table></div>
             <div id="participants-empty" class="feed-empty">댓글을 수집하면 참가자가 여기에 표시됩니다.</div>
           </article>
           <p id="result-note" class="results-disclaimer"></p>

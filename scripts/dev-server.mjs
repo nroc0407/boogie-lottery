@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import pagesHandler from "../api/pages.js";
 import commentsHandler from "../api/comments.js";
+import commentActivityHandler from "../api/comment-activity.js";
 
 const assets = new Map([
   ["/", ["index.html", "text/html; charset=utf-8"]],
@@ -20,7 +21,7 @@ const server = createServer(async (request, response) => {
   response.on("finish", () => console.log(`${request.method} ${pathname} ${response.statusCode}`));
   response.setHeader("X-Content-Type-Options", "nosniff");
   try {
-    if (pathname === "/api/pages" || pathname === "/api/comments") {
+    if (["/api/pages", "/api/comments", "/api/comment-activity"].includes(pathname)) {
       if (request.method === "POST") {
         const chunks = [];
         let length = 0;
@@ -35,7 +36,8 @@ const server = createServer(async (request, response) => {
         }
         request.body = Buffer.concat(chunks).toString("utf8");
       }
-      await (pathname === "/api/comments" ? commentsHandler : pagesHandler)(request, response);
+      const handler = pathname === "/api/comments" ? commentsHandler : pathname === "/api/comment-activity" ? commentActivityHandler : pagesHandler;
+      await handler(request, response);
       return;
     }
     if (pathname === "/favicon.ico") {
