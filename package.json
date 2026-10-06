@@ -1,0 +1,19 @@
+{
+  "name": "boogie-lottery",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "dev": "node scripts/dev-server.mjs",
+    "check": "node scripts/check.mjs",
+    "test": "node --test tests/lottery.test.mjs"
+  },
+  "description": "DCInside comment raffle with six-month gallery activity checks and automatic winner selection",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nroc0407/boogie-lottery.git"
+  }
+}
