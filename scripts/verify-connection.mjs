@@ -22,7 +22,7 @@ try {
   page.on("console", (message) => { if (message.type() === "error") consoleErrors.push(message.text()); });
   page.on("response", (response) => {
     const path = new URL(response.url()).pathname;
-    if (["/", "/app.js", "/lottery-core.js", "/styles.css", "/styles-base.css"].includes(path)) assetResponses.push({ path, status: response.status() });
+    if (["/", "/app.js", "/lottery-core.js", "/styles.css"].includes(path)) assetResponses.push({ path, status: response.status() });
     if (path === "/api/comments" || path === "/api/pages") pendingResponses.push((async () => {
       const body = await response.json();
       apiResponses.push({ path, status: response.status(), pages: body.pages?.length || 0,
@@ -61,7 +61,7 @@ try {
   const winnerLinks = await page.locator("#winner-list a").evaluateAll((nodes) => nodes.map((node) => node.href));
   assert.equal(new Set(winnerLinks).size, 2);
   assert.ok(winnerLinks.every((link) => new URL(link).searchParams.has("fcno")));
-  for (const path of ["/", "/app.js", "/lottery-core.js", "/styles.css", "/styles-base.css"]) {
+  for (const path of ["/", "/app.js", "/lottery-core.js", "/styles.css"]) {
     assert.ok(assetResponses.some((item) => item.path === path && item.status === 200), path + " must load");
   }
   const downloadPromise = page.waitForEvent("download");

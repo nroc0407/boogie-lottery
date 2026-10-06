@@ -18,14 +18,61 @@ let settings = null;
 let asOf = 0;
 let cutoff = 0;
 let phase = "idle";
+let statusTone = "idle";
+let elapsedSeconds = 0;
+let lastLog = "";
 
 function number(value) { return Number(value || 0).toLocaleString("ko-KR"); }
 function date(value) { return value ? new Date(value).toLocaleDateString("ko-KR", { timeZone: "Asia/Seoul" }) : "—"; }
+function clock(seconds) { return String(Math.floor(seconds / 60)).padStart(2, "0") + ":" + String(seconds % 60).padStart(2, "0"); }
+function updateElapsed() {
+  if (controller) elapsedSeconds = Math.max(0, Math.floor((Date.now() - asOf) / 1000));
+  $("elapsed-time").textContent = clock(elapsedSeconds);
+}
+function appendLog(message, tone = "info", detail = "") {
+  const signature = tone + "|" + message + "|" + detail;
+  if (signature === lastLog) return;
+  lastLog = signature;
+  const log = $("progress-log");
+  const output = log.closest(".console-output");
+  const atBottom = output.scrollHeight - output.scrollTop - output.clientHeight < 28;
+  const row = document.createElement("li");
+  row.className = "log-" + tone;
+  const time = document.createElement("span");
+  time.className = "log-time";
+  time.textContent = clock(asOf ? Math.max(0, Math.floor((Date.now() - asOf) / 1000)) : 0);
+  const content = document.createElement("span");
+  content.className = "log-message";
+  content.textContent = message;
+  if (detail) {
+    const extra = document.createElement("span");
+    extra.className = "log-detail";
+    extra.textContent = " / " + detail;
+    content.append(extra);
+  }
+  row.append(time, content);
+  log.append(row);
+  while (log.children.length > 120) log.firstElementChild.remove();
+  $("welcome").hidden = true;
+  if (atBottom) output.scrollTop = output.scrollHeight;
+}
+function renderProgress() {
+  updateElapsed();
+  $("coverage-detail").textContent = "글 " + number(scanPages) + "p / 댓글 " + number(commentScanPages) + "p";
+  $("coverage-state").textContent = drawn ? "완료" : statusTone === "stopped" ? "중단"
+    : statusTone === "error" ? (completed || participants.some((person) => person.status === "pending") ? "보류" : "오류")
+    : controller ? "처리 중" : "대기";
+}
 function status(message, tone = "loading", detail = "") {
+  statusTone = tone;
+  document.querySelector(".app-shell").dataset.tone = tone;
   $("status-banner").hidden = false;
   $("status-banner").className = "status-banner" + (tone === "error" ? " is-error" : tone === "success" ? " is-success" : "");
+  $("status-indicator").textContent = tone === "error" ? "[!]" : tone === "success" ? "[+]" : tone === "stopped" ? "[-]" : "[>]";
   $("status-text").textContent = message;
   $("status-pages").textContent = detail;
+  appendLog(message, tone, detail);
+  renderProgress();
 }
 function setRunning(value) {
   $("start-button").disabled = value;
@@ -33,12 +80,13 @@ function setRunning(value) {
   $("stop-button").disabled = !value;
   for (const input of $("analysis-form").querySelectorAll("input, select")) input.disabled = value;
   $("example-button").disabled = value;
-  $("start-label").textContent = value ? "댓글 확인 · 활동 검사 중" : "자동 추첨 시작";
+  $("start-label").textContent = value ? "처리 중" : "추첨 시작";
   $("redraw-button").disabled = value || !completed || participants.some((p) => p.status === "pending")
     || participants.filter((p) => p.status === "eligible").length < (settings?.winnerCount || 1);
 }
 function setPhase(value) {
   phase = value;
+  document.querySelector(".app-shell").dataset.phase = value;
   for (const step of document.querySelectorAll("[data-step]")) {
     const order = ["comments", "activity", "draw"];
     const index = order.indexOf(value);
@@ -95,6 +143,10 @@ async function run(event) {
   completed = false;
   drawn = null;
   asOf = Date.now();
+  elapsedSeconds = 0;
+  lastLog = "";
+  statusTone = "loading";
+  $("progress-log").replaceChildren();
   cutoff = evaluationCutoff(asOf, settings.periodValue, settings.periodUnit);
   const sessionKey = [...crypto.getRandomValues(new Uint8Array(32))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
   controller = new AbortController();
@@ -103,13 +155,14 @@ async function run(event) {
   $("results").hidden = false;
   setRunning(true);
   setPhase("comments");
+  appendLog(periodLabel(settings) + " / " + criteriaLabel(settings));
   render();
   try {
     const commentIds = new Set();
     let nextCommentPage = 1;
     while (nextCommentPage) {
       if (nextCommentPage > 100) throw new Error("댓글이 100페이지를 넘어 전체 참가자를 확인할 수 없습니다. 추첨을 보류합니다.");
-      status("게시글의 댓글 작성자를 모으고 있습니다.", "loading", "댓글 " + nextCommentPage + "페이지");
+      status("댓글 수집 중", "loading", nextCommentPage + "p");
       const data = await api("/api/comments", { postUrl: settings.url, sessionKey, startPage: nextCommentPage, count: Math.min(3, 101 - nextCommentPage) }, signal);
       post = data.post;
       if (!Array.isArray(data.pages) || !data.pages.length) throw new Error("댓글 페이지 정보가 없습니다.");
@@ -122,6 +175,7 @@ async function run(event) {
         nextCommentPage = page.nextPage;
       }
       participants = collectParticipants(comments, settings, post.authorKey);
+      appendLog("댓글 " + number(comments.length) + "개 / 참가 " + number(participants.length) + "명", "info", data.pages.at(-1).page + "p 확인");
       render();
       if (nextCommentPage) await wait(350, signal);
     }
@@ -141,14 +195,15 @@ async function run(event) {
     completed = true;
     render();
     if (participants.some((person) => person.status === "pending")) {
-      throw new Error("선택한 기간의 글·댓글 활동을 확인하지 못한 참가자가 있어 추첨을 보류합니다. 참가자 표의 사유를 확인해주세요.");
+      throw new Error("미확인 " + participants.filter((person) => person.status === "pending").length + "명 / 추첨 보류");
     }
     makeDraw();
-    status("댓글 참가자 활동 확인과 자동 추첨을 마쳤습니다.", "success", periodLabel(settings) + " · " + criteriaLabel(settings));
+    status("추첨 완료", "success", drawn.winners.length + "명 당첨");
   } catch (error) {
-    status(error.name === "AbortError" ? "확인을 중단했습니다. 미확인 참가자가 있어 자동 추첨을 진행하지 않았습니다." : error.message,
-      error.name === "AbortError" ? "success" : "error");
+    status(error.name === "AbortError" ? "중단됨 / 추첨 미실행" : error.message,
+      error.name === "AbortError" ? "stopped" : "error");
   } finally {
+    updateElapsed();
     controller = null;
     setRunning(false);
     render();
@@ -169,7 +224,7 @@ async function scanPostActivity(sessionKey, signal, checkable) {
   const keys = new Set(checkable.map((person) => person.key));
   const allMet = () => checkable.every((person) => activityFor(person.key).count >= settings.minPosts);
   for (let startPage = 1; startPage <= MAX_PAGES; startPage += 5) {
-    status("댓글 참가자의 " + periodLabel(settings) + " 작성글을 확인하고 있습니다.", "loading", number(scanPages) + "페이지 확인");
+    status("작성글 조회 중", "loading", startPage + "p부터");
     const data = await api("/api/pages", { galleryId: post.id, galleryType: post.type, sessionKey, startPage, count: Math.min(5, MAX_PAGES - startPage + 1) }, signal);
     if (!Array.isArray(data.pages) || !data.pages.length) throw new Error("활동 목록 페이지 정보가 없습니다.");
     let boundary = false;
@@ -192,6 +247,9 @@ async function scanPostActivity(sessionKey, signal, checkable) {
       refreshParticipants();
       if (boundary || emptyStreak >= 2 || allMet()) break;
     }
+    appendLog("작성글 " + number(scanPages) + "p 확인", "info",
+      "기준 충족 " + checkable.filter((person) => activityFor(person.key).count >= settings.minPosts).length + "/" + checkable.length + "명"
+      + (oldest ? " · " + date(oldest) + "까지" : ""));
     if (boundary || emptyStreak >= 2 || allMet()) break;
     if (startPage + 5 <= MAX_PAGES) await wait(350, signal);
   }
@@ -203,6 +261,7 @@ async function scanCommentActivity(sessionKey, signal) {
     const activity = activityFor(person.key);
     if (person.identityType !== "uid") {
       activity.commentError = "유동·미식별 참가자의 댓글 활동을 확인할 수 없어 보류합니다.";
+      appendLog(person.name + " / 댓글 활동 확인 불가", "error");
       refreshParticipants();
       continue;
     }
@@ -212,7 +271,7 @@ async function scanCommentActivity(sessionKey, signal) {
     try {
       while (nextPage && activity.comments < settings.minComments) {
         if (nextPage > MAX_PAGES) { activity.commentError = "갤로그 2,000페이지 제한으로 댓글 활동이 미확인입니다."; break; }
-        status(person.name + "님의 " + periodLabel(settings) + " 댓글 활동을 확인하고 있습니다.", "loading", (index + 1) + "/" + candidates.length + "명 · " + nextPage + "페이지");
+        status(person.name + " / 댓글 조회", "loading", (index + 1) + "/" + candidates.length + "명 · " + nextPage + "p");
         const data = await api("/api/comment-activity", { postUrl: post.url, sessionKey, authorKey: person.key,
           sourcePage: person.firstCommentPage, startPage: nextPage,
           count: Math.min(settings.minComments - activity.comments > 40 ? 3 : 1, MAX_PAGES - nextPage + 1) }, signal);
@@ -247,11 +306,15 @@ async function scanCommentActivity(sessionKey, signal) {
       if (error.name === "AbortError") throw error;
       activity.commentError = error.message;
     }
+    appendLog(person.name + " / " + (activity.commentError ? activity.commentError : "댓글 " + activity.comments + "/" + settings.minComments + "개"),
+      activity.commentError ? "error" : activity.comments >= settings.minComments ? "success" : "info");
     refreshParticipants();
     if (index + 1 < candidates.length) await wait(650, signal);
   }
 }
 function makeDraw() {
+  setPhase("draw");
+  appendLog("당첨자 추첨 / 후보 " + participants.filter((person) => person.status === "eligible").length + "명");
   const winners = pickWinners(participants, settings.winnerCount);
   drawn = { id: crypto.randomUUID(), at: Date.now(), winners };
   setPhase("done");
@@ -259,7 +322,7 @@ function makeDraw() {
 }
 function redraw() {
   if (controller || !completed) return;
-  try { makeDraw(); status("같은 통과 후보에서 다시 추첨했습니다.", "success"); }
+  try { makeDraw(); status("재추첨 완료", "success", drawn.winners.length + "명 당첨"); }
   catch (error) { status(error.message, "error"); }
 }
 function commentLink(person) {
@@ -280,7 +343,7 @@ function renderRows() {
     nameLink.className = "participant-name";
     nameLink.textContent = person.name;
     nameCell.append(nameLink);
-    const cells = [person.identityType === "uid" ? "로그인 계정" : person.identityType === "ip" ? "유동" : "미식별",
+    const cells = [person.identityType === "uid" ? "계정" : person.identityType === "ip" ? "유동" : "미식별",
       person.commentCount + "개", settings.minPosts > 0 ? number(person.postCount) : "—",
       person.commentsChecked ? number(person.activityCommentCount) : "—", date(person.lastActivity)];
     row.append(nameCell);
@@ -288,7 +351,7 @@ function renderRows() {
     const resultCell = document.createElement("td");
     const pill = document.createElement("span");
     pill.className = "result-pill " + person.status;
-    pill.textContent = person.status === "eligible" ? "통과" : person.status === "pending" ? "확인 중" : "제외";
+    pill.textContent = person.status === "eligible" ? "통과" : person.status === "pending" ? "보류" : "제외";
     const reason = document.createElement("small");
     reason.className = "result-reason";
     reason.textContent = person.reason;
@@ -320,28 +383,26 @@ function renderWinners() {
     article.append(place, link, detail);
     list.append(article);
   });
-  $("draw-detail").textContent = new Date(drawn.at).toLocaleString("ko-KR", { timeZone: "Asia/Seoul" }) + " · 추첨 번호 " + drawn.id.slice(0, 8);
+  $("draw-detail").textContent = new Date(drawn.at).toLocaleTimeString("ko-KR", { timeZone: "Asia/Seoul", hour12: false }) + " / " + drawn.winners.length + "명";
 }
 function render() {
-  if ($("results").hidden) return;
+  renderProgress();
   const eligible = participants.filter((person) => person.status === "eligible").length;
   const excluded = participants.filter((person) => person.status === "excluded").length;
   const pending = participants.filter((person) => person.status === "pending").length;
-  $("report-title").textContent = post?.title || "댓글 참가자 확인";
-  $("report-subtitle").textContent = post ? post.id + " 갤러리 · " + post.no + "번 글 · " + date(cutoff) + " ~ " + date(asOf) : "";
-  $("source-post").href = post?.url || "#";
   $("metric-comments").textContent = number(comments.length);
   $("metric-participants").textContent = number(participants.length);
   $("metric-eligible").textContent = number(eligible);
   $("metric-pending").textContent = number(pending);
+  if ($("results").hidden) return;
+  document.querySelector(".results-heading").hidden = !post?.title;
+  document.querySelector(".participants-panel").hidden = participants.length === 0;
+  document.querySelector(".report-actions").hidden = participants.length === 0;
+  $("report-title").textContent = post?.title || "";
+  $("report-subtitle").textContent = post ? post.id + " / " + date(cutoff) + " ~ " + date(asOf) : "";
+  $("source-post").href = post?.url || "#";
   $("participant-count").textContent = number(participants.length) + "명 · 제외 " + excluded + "명";
   $("coverage-label").textContent = periodLabel(settings) + " · " + criteriaLabel(settings);
-  $("coverage-detail").textContent = "작성글 목록 " + number(scanPages) + "페이지 · 갤로그 댓글 " + number(commentScanPages) + "페이지 확인"
-    + (activityComplete ? " · 작성글 기간 확인 완료" : oldest ? " · 가장 오래된 작성글 " + date(oldest) : "");
-  $("coverage-state").textContent = drawn ? "추첨 완료" : phase === "comments" ? "댓글 수집" : pending ? "활동 확인" : completed ? "확인 완료" : "대기";
-  $("result-note").textContent = "댓글 여러 개를 남겨도 1명으로 참여합니다. 활동은 선택한 갤러리의 공개 작성글·댓글로 확인하며, 나눔 글과 그 글의 참여 댓글은 활동에서 제외합니다. 0개로 설정한 항목은 조회하지 않습니다. "
-    + (settings?.includeGuests ? "유동은 공개 IP 대역과 닉네임 조합으로 묶으므로 같은 사람인지 확정할 수 없습니다. " : "유동은 현재 설정에서 제외합니다. ")
-    + (pending ? "아직 활동을 확인하지 못한 " + pending + "명이 있어 추첨을 보류합니다." : "통과 후보는 모두 같은 확률로 추첨됩니다.");
   $("export-csv").disabled = participants.length === 0;
   $("copy-result").disabled = !drawn;
   renderRows();
@@ -373,7 +434,7 @@ async function copyResult() {
     "참가 " + participants.length + "명 / 통과 " + participants.filter((p) => p.status === "eligible").length + "명",
     "", "당첨자", ...drawn.winners.map((person, index) => (index + 1) + ". " + person.name + " (참여 댓글 " + person.firstCommentId + ")"),
     "", "추첨 번호: " + drawn.id].join("\n");
-  try { await navigator.clipboard.writeText(message); status("당첨 결과를 복사했습니다.", "success"); }
+  try { await navigator.clipboard.writeText(message); status("결과 복사 완료", "success"); }
   catch { status("복사 권한이 없습니다. 결과 CSV를 저장해주세요.", "error"); }
 }
 $("analysis-form").addEventListener("submit", run);
@@ -388,3 +449,4 @@ $("period-unit").addEventListener("change", () => {
   if (Number($("period-value").value) > maximum) $("period-value").value = String(maximum);
 });
 setRunning(false);
+setInterval(() => { if (controller) updateElapsed(); }, 1000);
