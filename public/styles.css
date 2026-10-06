@@ -30,9 +30,6 @@ button:disabled { color: #52725b; border-color: #253a2c; background: #0a120d; bo
 a { color: var(--green); text-underline-offset: 3px; overflow-wrap: anywhere; }
 h1, h2, p { margin: 0; }
 .app-shell { width: min(100%, 920px); border: 1px solid #315d3f; border-radius: 5px; background: var(--panel); box-shadow: 0 24px 80px #0009, 0 0 40px #52e88308; }
-.titlebar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 22px; border-bottom: 1px solid var(--line); color: var(--green); }
-.titlebar h1 { font-size: 19px; line-height: 1.4; font-weight: 700; text-shadow: 0 0 18px #52e88340; }
-.program-name { color: var(--muted); font-size: 11px; letter-spacing: .14em; }
 .terminal-body { display: grid; gap: 20px; padding: 22px; }
 fieldset { min-width: 0; margin: 0; padding: 16px 18px 18px; border: 1px solid var(--line); }
 legend { padding: 0 8px; color: var(--bright); font-size: 14px; font-weight: 700; }
@@ -137,9 +134,6 @@ tbody tr:last-child td { border-bottom: 0; }
 @media (max-width: 620px) {
   body { padding: 20px 12px; }
   .app-shell { box-shadow: 0 16px 40px #0008; }
-  .titlebar { padding: 9px 12px; }
-  .titlebar h1 { font-size: 17px; }
-  .program-name { font-size: 10px; }
   .terminal-body { gap: 16px; padding: 14px; }
   fieldset { padding: 12px; }
   .number-controls, .number-controls[data-mode="total"] { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
