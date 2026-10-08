@@ -9,9 +9,8 @@ let participants = [];
 let counts = new Map();
 let scanPages = 0;
 let commentScanPages = 0;
-let oldest = 0;
-let undated = 0;
-let activityComplete = false;
+let profileScanCount = 0;
+let nextRequestAt = 0;
 let completed = false;
 let drawn = null;
 let settings = null;
@@ -58,7 +57,7 @@ function appendLog(message, tone = "info", detail = "") {
 }
 function renderProgress() {
   updateElapsed();
-  $("coverage-detail").textContent = "글 " + number(scanPages) + "p / 댓글 " + number(commentScanPages) + "p";
+  $("coverage-detail").textContent = "갤로그 " + number(profileScanCount) + "명 / 글 " + number(scanPages) + "p / 댓글 " + number(commentScanPages) + "p";
   $("coverage-state").textContent = drawn ? "완료" : statusTone === "stopped" ? "중단"
     : statusTone === "error" ? (completed || participants.some((person) => person.status === "pending") ? "보류" : "오류")
     : controller ? "처리 중" : "대기";
@@ -114,11 +113,17 @@ async function wait(ms, signal) {
   });
 }
 async function api(path, body, signal) {
+  await wait(Math.max(0, nextRequestAt - Date.now()), signal);
   const response = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body), cache: "no-store", signal });
+  nextRequestAt = Date.now() + 1100;
   let result;
   try { result = await response.json(); } catch { throw new Error("서버 응답을 읽을 수 없습니다."); }
-  if (!response.ok) throw new Error(result.error || ("요청 실패 (HTTP " + response.status + ")"));
+  if (!response.ok) {
+    const error = new Error(result.error || ("요청 실패 (HTTP " + response.status + ")"));
+    error.status = response.status;
+    throw error;
+  }
   return result;
 }
 function settingsFromForm() {
@@ -137,7 +142,7 @@ function settingsFromForm() {
   if (!Number.isInteger(minTotal) || minTotal < 0 || minTotal > 2000) throw new Error("글+댓글 합계는 0~2,000개로 설정해주세요.");
   evaluationCutoff(Date.now(), periodValue, periodUnit);
   if (!Number.isInteger(winnerCount) || winnerCount < 1 || winnerCount > 100) throw new Error("당첨 인원은 1~100명으로 설정해주세요.");
-  return { ...target, activityMode, minPosts, minComments, minTotal, periodValue, periodUnit, winnerCount, includeGuests: $("include-guests").checked,
+  return { ...target, requirePublicGallog: true, activityMode, minPosts, minComments, minTotal, periodValue, periodUnit, winnerCount, includeGuests: false,
     includeReplies: $("include-replies").checked, excludeAuthor: $("exclude-author").checked, keyword: $("keyword").value.trim() };
 }
 async function run(event) {
@@ -152,9 +157,7 @@ async function run(event) {
   counts = new Map();
   scanPages = 0;
   commentScanPages = 0;
-  oldest = 0;
-  undated = 0;
-  activityComplete = false;
+  profileScanCount = 0;
   completed = false;
   drawn = null;
   asOf = Date.now();
@@ -201,11 +204,9 @@ async function run(event) {
     if (!checkable.length) {
       participants = evaluateParticipants(participants, counts, settings, true);
       completed = true;
-      throw new Error("참가 조건을 통과한 댓글 작성자가 없습니다. 유동·대댓글·키워드 설정을 확인해주세요.");
+      throw new Error("참가 조건을 통과한 댓글 작성자가 없습니다. 대댓글·키워드 설정을 확인해주세요.");
     }
-    if (settings.minPosts > 0 || settings.minTotal > 0) await scanPostActivity(sessionKey, signal, checkable);
-    refreshParticipants();
-    if (settings.minComments > 0 || settings.minTotal > 0) await scanCommentActivity(sessionKey, signal);
+    await scanProfileActivity(sessionKey, signal, checkable);
     refreshParticipants();
     completed = true;
     render();
@@ -226,109 +227,133 @@ async function run(event) {
 }
 
 function refreshParticipants() {
-  participants = evaluateParticipants(participants, counts, settings, activityComplete);
+  participants = evaluateParticipants(participants, counts, settings, false);
   render();
 }
 function activityFor(key) {
   if (!counts.has(key)) counts.set(key, { count: 0, comments: 0, latest: 0, url: "" });
   return counts.get(key);
 }
-async function scanPostActivity(sessionKey, signal, checkable) {
-  let emptyStreak = 0;
-  const seenPosts = new Set();
-  const keys = new Set(checkable.map((person) => person.key));
-  const postTarget = Math.max(settings.minPosts, settings.minTotal);
-  const allMet = () => checkable.every((person) => activityFor(person.key).count >= postTarget);
-  for (let startPage = 1; startPage <= MAX_PAGES; startPage += 5) {
-    status("작성글 조회 중", "loading", startPage + "p부터");
-    const data = await api("/api/pages", { galleryId: post.id, galleryType: post.type, sessionKey, startPage, count: Math.min(5, MAX_PAGES - startPage + 1) }, signal);
-    if (!Array.isArray(data.pages) || !data.pages.length) throw new Error("활동 목록 페이지 정보가 없습니다.");
-    let boundary = false;
-    for (const page of data.pages) {
-      scanPages = page.page;
-      emptyStreak = page.posts.length ? 0 : emptyStreak + 1;
-      const dated = page.posts.filter((item) => item.ts > 0 && item.ts <= asOf);
-      if (dated.length) oldest = oldest ? Math.min(oldest, ...dated.map((item) => item.ts)) : Math.min(...dated.map((item) => item.ts));
-      if (dated.length && dated.every((item) => item.ts < cutoff)) boundary = true;
-      for (const item of page.posts) {
-        if (seenPosts.has(item.postNo)) continue;
-        seenPosts.add(item.postNo);
-        if (!item.ts) { undated += 1; continue; }
-        if (item.postNo === post.no || item.ts < cutoff || item.ts > asOf || !keys.has(item.authorKey)) continue;
-        const current = activityFor(item.authorKey);
-        current.count += 1;
-        if (item.ts > current.latest) { current.latest = item.ts; current.url = item.url; }
-      }
-      if (boundary || emptyStreak >= 2) activityComplete = undated === 0;
-      refreshParticipants();
-      if (boundary || emptyStreak >= 2 || allMet()) break;
-    }
-    appendLog("작성글 " + number(scanPages) + "p 확인", "info",
-      "글 확인 목표 충족 " + checkable.filter((person) => activityFor(person.key).count >= postTarget).length + "/" + checkable.length + "명"
-      + (oldest ? " · " + date(oldest) + "까지" : ""));
-    if (boundary || emptyStreak >= 2 || allMet()) break;
-    if (startPage + 5 <= MAX_PAGES) await wait(350, signal);
-  }
-}
-async function scanCommentActivity(sessionKey, signal) {
-  const candidates = participants.filter((person) => !person.exclusion && person.status !== "excluded");
-  for (let index = 0; index < candidates.length; index += 1) {
-    const person = candidates[index];
+async function scanProfileActivity(sessionKey, signal, checkable) {
+  for (let index = 0; index < checkable.length; index += 1) {
+    const person = checkable[index];
     const activity = activityFor(person.key);
-    const commentTarget = Math.max(settings.minComments, settings.minTotal - activity.count, 0);
-    if (activity.comments >= commentTarget) continue;
-    if (person.identityType !== "uid") {
-      activity.commentError = "유동·미식별 참가자의 댓글 활동을 확인할 수 없어 보류합니다.";
-      appendLog(person.name + " / 댓글 활동 확인 불가", "error");
+    const states = Object.fromEntries(["post", "comment"].map((kind) => [kind, {
+      nextPage: 1, seen: new Set(), fingerprints: new Set(), malformed: false, complete: false, error: "",
+    }]));
+    const wants = { post: settings.minPosts > 0 || settings.minTotal > 0, comment: settings.minComments > 0 || settings.minTotal > 0 };
+    const body = { postUrl: post.url, sessionKey, authorKey: person.key, sourcePage: person.firstCommentPage, cutoff, asOf };
+    const syncCoverage = () => {
+      activity.postsComplete = states.post.complete;
+      activity.commentsComplete = states.comment.complete;
+      activity.postError = states.post.error;
+      activity.commentError = states.comment.error;
       refreshParticipants();
-      continue;
-    }
-    let nextPage = 1;
-    let malformed = false;
-    const seenComments = new Set();
-    try {
-      while (nextPage && activity.comments < commentTarget) {
-        if (nextPage > MAX_PAGES) { activity.commentError = "갤로그 2,000페이지 제한으로 댓글 활동이 미확인입니다."; break; }
-        status(person.name + " / 댓글 조회", "loading", (index + 1) + "/" + candidates.length + "명 · " + nextPage + "p");
-        const data = await api("/api/comment-activity", { postUrl: post.url, sessionKey, authorKey: person.key,
-          sourcePage: person.firstCommentPage, startPage: nextPage,
-          count: Math.min(commentTarget - activity.comments > 40 ? 3 : 1, MAX_PAGES - nextPage + 1) }, signal);
-        if (data.unavailableReason) { activity.commentError = data.unavailableReason; break; }
-        if (!Array.isArray(data.pages) || !data.pages.length) throw new Error("댓글 활동 페이지 정보가 없습니다.");
-        for (const page of data.pages) {
-          commentScanPages += 1;
-          if (page.unavailableReason) { activity.commentError = page.unavailableReason; nextPage = null; break; }
-          activity.commentsChecked = true;
-          malformed ||= page.malformed;
-          const dated = page.comments.filter((item) => item.ts > 0 && item.ts <= asOf);
-          const boundary = dated.length > 0 && dated.every((item) => item.ts < cutoff);
-          for (const item of page.comments) {
-            if (seenComments.has(item.id)) continue;
-            seenComments.add(item.id);
-            if (!item.sameGallery || item.postNo === post.no || !item.ts || item.ts < cutoff || item.ts > asOf) continue;
-            activity.comments += 1;
-            if (item.ts > activity.latest) activity.latest = item.ts;
-          }
-          nextPage = page.nextPage;
-          if (boundary || !nextPage) {
-            activity.commentsComplete = !malformed && (boundary || page.paginationKnown);
-            if (!activity.commentsComplete) activity.commentError = "댓글 날짜·페이지 정보를 확인할 수 없어 보류합니다.";
-            nextPage = null;
-          }
-          refreshParticipants();
-          if (!nextPage || activity.comments >= commentTarget) break;
+    };
+    const consume = (pages) => {
+      for (const page of pages) {
+        const state = states[page.kind];
+        if (!state || page.page !== state.nextPage || !Array.isArray(page.entries)
+          || (page.nextPage !== null && page.nextPage !== page.page + 1)) throw new Error("갤로그 페이지 정보를 확인할 수 없습니다.");
+        if (!wants[page.kind]) continue;
+        if (page.kind === "post") scanPages += 1;
+        else { commentScanPages += 1; activity.commentsChecked = true; }
+        if (page.unavailableReason) {
+          state.error = page.unavailableReason;
+          state.nextPage = null;
+          continue;
         }
-        if (nextPage && activity.comments < commentTarget) await wait(650, signal);
+        if (!page.fingerprint || (page.fingerprint !== "empty" && state.fingerprints.has(page.fingerprint))) {
+          state.error = "갤로그 페이지가 반복되어 활동 확인을 보류합니다.";
+          state.nextPage = null;
+          continue;
+        }
+        state.fingerprints.add(page.fingerprint);
+        state.malformed ||= page.malformed;
+        for (const item of page.entries) {
+          if (state.seen.has(item.id)) continue;
+          const target = parsePostUrl(item.url);
+          if (target.id !== post.id || target.type !== post.type || target.no === post.no
+            || !item.ts || item.ts < cutoff || item.ts > asOf) throw new Error("해당 갤러리의 활동 기록을 확인할 수 없습니다.");
+          state.seen.add(item.id);
+          if (page.kind === "post") activity.count += 1;
+          else activity.comments += 1;
+          if (item.ts > activity.latest) { activity.latest = item.ts; activity.url = target.url; }
+        }
+        state.nextPage = page.nextPage;
+        if (page.boundary || !state.nextPage) {
+          state.complete = !state.malformed && (page.boundary || page.paginationKnown);
+          state.nextPage = null;
+          if (!state.complete) state.error = "갤로그 날짜·페이지 정보가 불완전해 활동 확인을 보류합니다.";
+        }
+      }
+      syncCoverage();
+    };
+    const pending = () => participants.find((entry) => entry.key === person.key)?.status === "pending";
+    try {
+      status(person.name + " / 갤로그 공개 확인", "loading", (index + 1) + "/" + checkable.length + "명");
+      const access = await api("/api/comment-activity", { ...body, action: "access" }, signal);
+      if (access.profileStatus === "public" && (!Array.isArray(access.pages) || access.pages.length !== 2
+        || access.pages[0].kind !== "post" || access.pages[1].kind !== "comment"
+        || access.pages.some((page) => page.visibility !== "public"))) throw new Error("갤로그 글·댓글 공개 여부를 확인할 수 없습니다.");
+      activity.profileStatus = access.profileStatus;
+      if (access.profileStatus !== "public") {
+        activity.profileError = access.unavailableReason || access.error || "갤로그 공개 여부를 확인할 수 없어 보류합니다.";
+      } else {
+        consume(access.pages);
+        let previousKind = "comment";
+        while (pending()) {
+          const available = ["post", "comment"].filter((kind) => wants[kind] && states[kind].nextPage && !states[kind].error
+            && (settings.minTotal > 0 || (kind === "post" ? activity.count < settings.minPosts : activity.comments < settings.minComments)));
+          if (!available.length) break;
+          const kind = available.find((value) => value !== previousKind) || available[0];
+          previousKind = kind;
+          const state = states[kind];
+          if (state.nextPage > MAX_PAGES) {
+            state.error = "갤로그 2,000페이지 제한으로 활동 확인을 보류합니다.";
+            state.nextPage = null;
+            syncCoverage();
+            continue;
+          }
+          status(person.name + " / " + (kind === "post" ? "글" : "댓글") + " 활동 확인", "loading", post.id + " · " + state.nextPage + "p");
+          const data = await api("/api/comment-activity", { ...body, kind, startPage: state.nextPage,
+            count: Math.min(3, MAX_PAGES - state.nextPage + 1) }, signal);
+          if (["private", "missing"].includes(data.profileStatus)) {
+            activity.profileStatus = data.profileStatus;
+            activity.profileError = data.unavailableReason;
+            refreshParticipants();
+            break;
+          }
+          if (!Array.isArray(data.pages) || !data.pages.length) {
+            state.error = data.unavailableReason || data.error || "갤로그 활동 목록을 읽지 못해 보류합니다.";
+            state.nextPage = null;
+            syncCoverage();
+            continue;
+          }
+          consume(data.pages);
+          if (data.error || data.profileStatus === "unknown") {
+            state.error = data.error || data.unavailableReason || "갤로그 접근 오류로 확인을 보류합니다.";
+            state.complete = false;
+            state.nextPage = null;
+            syncCoverage();
+          }
+        }
       }
     } catch (error) {
-      if (error.name === "AbortError") throw error;
-      activity.commentError = error.message;
+      if (error.name === "AbortError" || error.status === 429) throw error;
+      if (activity.profileStatus !== "public") {
+        activity.profileStatus = "unknown";
+        activity.profileError = error.message;
+      } else {
+        activity.postError ||= error.message;
+        activity.commentError ||= error.message;
+      }
     }
-    appendLog(person.name + " / " + (activity.commentError ? activity.commentError : "댓글 " + activity.comments + "/" + commentTarget + "개")
-      + (settings.minTotal > 0 ? " / 합계 " + (activity.count + activity.comments) + "/" + settings.minTotal + "개" : ""),
-      activity.commentError ? "error" : activity.comments >= commentTarget ? "success" : "info");
+    profileScanCount += 1;
     refreshParticipants();
-    if (index + 1 < candidates.length) await wait(650, signal);
+    const assessed = participants.find((entry) => entry.key === person.key);
+    appendLog(person.name + " / " + assessed.reason,
+      assessed.status === "eligible" ? "success" : assessed.status === "pending" ? "error" : "info");
   }
 }
 function makeDraw() {
@@ -363,6 +388,7 @@ function renderRows() {
     nameLink.textContent = person.name;
     nameCell.append(nameLink);
     const cells = [person.identityType === "uid" ? "계정" : person.identityType === "ip" ? "유동" : "미식별",
+      person.profileStatus === "public" ? "공개" : person.profileStatus === "private" ? "비공개" : person.exclusion ? "—" : "미확인",
       person.commentCount + "개", !person.exclusion && (settings.minPosts > 0 || settings.minTotal > 0) ? number(person.postCount) : "—",
       person.commentsChecked ? number(person.activityCommentCount) : "—",
       !person.exclusion && (settings.minPosts > 0 || settings.minComments > 0 || settings.minTotal > 0) ? number(person.totalActivityCount) : "—",
@@ -424,7 +450,7 @@ function render() {
   $("report-subtitle").textContent = post ? post.id + " / " + date(cutoff) + " ~ " + date(asOf) : "";
   $("source-post").href = post?.url || "#";
   $("participant-count").textContent = number(participants.length) + "명 · 제외 " + excluded + "명";
-  $("coverage-label").textContent = periodLabel(settings) + " · " + criteriaLabel(settings);
+  $("coverage-label").textContent = periodLabel(settings) + " · " + criteriaLabel(settings) + " · 공개 갤로그 필수 / " + post.id + " 갤러리만 집계";
   $("export-csv").disabled = participants.length === 0;
   $("copy-result").disabled = !drawn;
   renderRows();
@@ -438,13 +464,17 @@ function exportCsv() {
     return '"' + str.replace(/"/g, '""') + '"';
   };
   const rows = [["name", "comment_no", "entry_comment_count", "confirmed_posts", "confirmed_comments", "confirmed_total", "status", "reason", "winner", "comment_url",
-    "assessment_start", "assessment_end", "period_value", "period_unit", "activity_mode", "min_posts", "min_comments", "min_total"],
+    "assessment_start", "assessment_end", "period_value", "period_unit", "activity_mode", "min_posts", "min_comments", "min_total",
+    "profile_status", "gallery_id", "gallery_type", "posts_complete", "comments_complete", "date_precision"],
     ...participants.map((person) => [person.name, person.firstCommentId, person.commentCount,
       !person.exclusion && (settings.minPosts > 0 || settings.minTotal > 0) ? person.postCount : "",
       person.commentsChecked ? person.activityCommentCount : "",
       !person.exclusion && (settings.minPosts > 0 || settings.minComments > 0 || settings.minTotal > 0) ? person.totalActivityCount : "",
       person.status, person.reason, winnerKeys.has(person.key) ? "Y" : "N", commentLink(person),
-      new Date(cutoff).toISOString(), new Date(asOf).toISOString(), settings.periodValue, settings.periodUnit, settings.activityMode, settings.minPosts, settings.minComments, settings.minTotal])];
+      new Date(cutoff).toISOString(), new Date(asOf).toISOString(), settings.periodValue, settings.periodUnit, settings.activityMode, settings.minPosts, settings.minComments, settings.minTotal,
+      person.profileStatus || "not-checked", post.id, post.type,
+      !person.exclusion && (settings.minPosts > 0 || settings.minTotal > 0) ? person.postsComplete : "",
+      !person.exclusion && (settings.minComments > 0 || settings.minTotal > 0) ? person.commentsComplete : "", "day"])];
   const url = URL.createObjectURL(new Blob(["\uFEFF" + rows.map((row) => row.map(safe).join(",")).join("\r\n")], { type: "text/csv;charset=utf-8" }));
   const anchor = document.createElement("a");
   anchor.href = url;
@@ -456,6 +486,7 @@ async function copyResult() {
   if (!drawn) return;
   const message = ["[부기 추첨자]", post.title, post.url, periodLabel(settings) + " · " + criteriaLabel(settings),
     "평가기간: " + date(cutoff) + " ~ " + date(asOf),
+    "공개 갤로그 필수 / " + post.id + " 갤러리의 글·댓글만 평가",
     "참가 " + participants.length + "명 / 통과 " + participants.filter((p) => p.status === "eligible").length + "명",
     "", "당첨자", ...drawn.winners.map((person, index) => (index + 1) + ". " + person.name + " (참여 댓글 " + person.firstCommentId + ")"),
     "", "추첨 번호: " + drawn.id].join("\n");

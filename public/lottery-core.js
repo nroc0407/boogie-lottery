@@ -70,6 +70,7 @@ export function collectParticipants(comments, settings, postAuthorKey = "") {
     let exclusion = "";
     if (!comment.authorKnown) exclusion = "작성자 식별 불가";
     else if (settings.excludeAuthor && key === postAuthorKey) exclusion = "게시글 작성자";
+    else if (settings.requirePublicGallog && comment.identityType !== "uid") exclusion = "연결할 갤로그가 없는 참가자";
     else if (!settings.includeGuests && comment.identityType === "ip") exclusion = "유동 제외 설정";
     people.set(key, { key, name: comment.authorName, identityType: comment.identityType, authorType: comment.authorType,
       firstCommentId: comment.id, firstCommentPage: comment.sourcePage || 1, commentCount: 1, content: comment.content, exclusion,
@@ -86,15 +87,23 @@ export function evaluateParticipants(participants, counts, minimum, complete) {
   return participants.map((person) => {
     if (person.exclusion) return { ...person };
     const activity = counts.get(person.key) || { count: 0, latest: 0, url: "" };
+    if (rules.requirePublicGallog && ["private", "missing"].includes(activity.profileStatus)) {
+      const reason = activity.profileError || (activity.profileStatus === "private" ? "갤로그 비공개" : "연결할 갤로그 없음");
+      return { ...person, profileStatus: activity.profileStatus, exclusion: reason, status: "excluded", reason };
+    }
+    if (rules.requirePublicGallog && activity.profileStatus !== "public") {
+      return { ...person, profileStatus: activity.profileStatus || "unknown", status: "pending", reason: activity.profileError || "갤로그 공개 여부 확인 중" };
+    }
+    const postsComplete = activity.postsComplete ?? complete;
     const posts = activity.count || 0;
     const commentCount = activity.comments || 0;
     const postsMet = posts >= minPosts;
     const commentsMet = commentCount >= minComments;
     const total = posts + commentCount;
     const totalMet = total >= minTotal;
-    const postsFailed = !postsMet && complete;
+    const postsFailed = !postsMet && postsComplete;
     const commentsFailed = !commentsMet && activity.commentsComplete;
-    const totalFailed = !totalMet && complete && activity.commentsComplete;
+    const totalFailed = !totalMet && postsComplete && activity.commentsComplete;
     const enough = postsMet && commentsMet && totalMet;
     let reason;
     if (postsFailed) reason = posts === 0 ? `${period} 작성글 없음` : `작성글 기준 미달 (${posts}/${minPosts}개)`;
@@ -102,9 +111,11 @@ export function evaluateParticipants(participants, counts, minimum, complete) {
     else if (totalFailed) reason = `글+댓글 합계 미달 (${total}/${minTotal}개)`;
     else if (enough) reason = minPosts || minComments || minTotal ? `활동 기준 충족 (${criteriaLabel(rules)})` : "활동 검사 사용 안 함";
     else if (activity.commentError && (!commentsMet || !totalMet)) reason = activity.commentError;
+    else if (activity.postError && (!postsMet || !totalMet)) reason = activity.postError;
     else reason = `${period} ${!postsMet ? "작성글" : !commentsMet ? "댓글" : "글+댓글 합계"} 활동 확인 중`;
     return { ...person, postCount: posts, activityCommentCount: commentCount, totalActivityCount: total, commentsChecked: Boolean(activity.commentsChecked),
-      commentsComplete: Boolean(activity.commentsComplete), lastActivity: activity.latest, evidenceUrl: activity.url,
+      postsComplete: Boolean(postsComplete), commentsComplete: Boolean(activity.commentsComplete), profileStatus: activity.profileStatus,
+      lastActivity: activity.latest, evidenceUrl: activity.url,
       status: postsFailed || commentsFailed || totalFailed ? "excluded" : enough ? "eligible" : "pending", reason };
   });
 }

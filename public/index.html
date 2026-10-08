@@ -40,12 +40,12 @@
                 <div class="checkbox-options">
                   <label><input id="include-replies" type="checkbox" checked>대댓글 포함</label>
                   <label><input id="exclude-author" type="checkbox" checked>글쓴이 제외</label>
-                  <label><input id="include-guests" type="checkbox">유동 포함</label>
                 </div>
               </div>
             </details>
             <small id="activity-help">글·댓글 모두 충족 / 0 = 해당 기준 끄기</small>
           </div>
+          <p class="scope-note">공개 갤로그 필수 · 추첨글과 같은 갤러리만 평가</p>
           <div class="run-actions"><button id="start-button" class="primary-button" type="submit"><span id="start-label">추첨 시작</span></button><button id="stop-button" type="button" hidden>중단</button></div>
         </fieldset>
       </form>
@@ -58,7 +58,7 @@
           <ol id="progress-log" aria-label="처리 내역"></ol>
           <div id="welcome" class="console-prompt" aria-hidden="true">&gt; <span class="cursor">_</span></div>
         </div>
-        <div class="progress-footer"><span id="coverage-detail">글 0p / 댓글 0p</span><span id="coverage-state">대기</span></div>
+        <div class="progress-footer"><span id="coverage-detail">갤로그 0명 / 글 0p / 댓글 0p</span><span id="coverage-state">대기</span></div>
         <div class="metric-grid">
           <div>댓글 <strong id="metric-comments">0</strong></div><div>참가 <strong id="metric-participants">0</strong></div><div>후보 <strong id="metric-eligible">0</strong></div><div>보류 <strong id="metric-pending">0</strong></div>
         </div>
@@ -69,7 +69,7 @@
         <fieldset id="winner-section" class="winner-section" hidden aria-live="polite"><legend>당첨자</legend><div id="winner-list" class="winner-list"></div><p id="draw-detail"></p></fieldset>
         <details class="participants-panel">
           <summary>참가자 <span id="participant-count"></span></summary>
-          <div class="table-wrap"><table><thead><tr><th>참가자</th><th>유형</th><th>참여 댓글</th><th>글</th><th>댓글</th><th>확인 합계</th><th>최근 활동</th><th>판정</th></tr></thead><tbody id="participant-table"></tbody></table></div>
+          <div class="table-wrap"><table><thead><tr><th>참가자</th><th>유형</th><th>갤로그</th><th>참여 댓글</th><th>글</th><th>댓글</th><th>확인 합계</th><th>최근 활동</th><th>판정</th></tr></thead><tbody id="participant-table"></tbody></table></div>
           <p id="participants-empty">수집 중</p>
         </details>
         <div class="report-actions"><button id="redraw-button" type="button" disabled>다시 추첨</button><button id="copy-result" type="button" disabled>결과 복사</button><button id="export-csv" type="button" disabled>CSV 저장</button></div>

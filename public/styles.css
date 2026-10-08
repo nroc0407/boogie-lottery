@@ -53,6 +53,7 @@ input:disabled, select:disabled { opacity: .55; }
 .period-control select { flex: 0 0 auto; width: 62px; height: 32px; padding: 0; border: 0; background: var(--console); color: var(--ink); }
 .settings-bottom { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-top: 14px; }
 .settings-bottom > small { color: var(--muted); font-size: 11px; text-align: right; padding-top: 2px; }
+.scope-note { margin-top: 12px; color: var(--muted); font-size: 11px; text-align: center; }
 summary { width: fit-content; color: var(--green); cursor: pointer; }
 summary:hover { color: var(--bright); }
 .extra-options { flex: 1; min-width: 0; }
@@ -113,7 +114,7 @@ summary:hover { color: var(--bright); }
 .participants-panel > summary { width: 100%; font-size: 13px; }
 #participant-count { color: var(--muted); font-size: 12px; }
 .table-wrap { max-height: 400px; overflow: auto; margin-top: 12px; border: 1px solid var(--line); scrollbar-color: #3d7250 var(--console); }
-table { width: 100%; min-width: 830px; border-collapse: collapse; font-size: 12px; }
+table { width: 100%; min-width: 890px; border-collapse: collapse; font-size: 12px; }
 th, td { padding: 9px 10px; text-align: left; border-bottom: 1px solid #203b28; vertical-align: top; }
 th { position: sticky; top: 0; color: var(--green); background: #0b1b10; font-weight: 400; font-size: 11px; white-space: nowrap; }
 td:first-child { min-width: 130px; max-width: 180px; }
