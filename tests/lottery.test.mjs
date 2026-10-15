@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { webcrypto } from "node:crypto";
-import { parsePostUrl, sixMonthCutoff, evaluationCutoff, periodLabel, participantLabel, applyParticipantSelection, collectParticipants, evaluateParticipants, pickWinners } from "../public/lottery-core.js";
-import { parseComments, nextPage } from "../api/comments.js";
+import { parsePostInput, parsePostUrl, sixMonthCutoff, evaluationCutoff, periodLabel, participantLabel, applyParticipantSelection, collectParticipants, evaluateParticipants, pickWinners } from "../public/lottery-core.js";
+import commentsHandler, { parseComments, nextPage, loadCommentSource } from "../api/comments.js";
 import { parsePosts } from "../api/pages.js";
 import activityHandler from "../api/comment-activity.js";
 import { createRecord } from "../public/result-export.js";
@@ -18,6 +18,68 @@ test("게시글 URL은 일반·마이너·미니만 허용하고 다른 호스�
   for (const value of ["http://127.0.0.1/?id=a&no=1", "https://gall.dcinside.com.evil.test/board/view/?id=a&no=1",
     "https://gall.dcinside.com/board/lists/?id=a&no=1", "https://gall.dcinside.com:444/board/view/?id=a&no=1"]) {
     assert.throws(() => parsePostUrl(value));
+  }
+});
+
+test("모바일·단축 공유 주소는 PC 조회 주소로 바꾸고 외부 호스트·목록은 거부", () => {
+  const expected = parsePostUrl("https://gall.dcinside.com/board/view/?id=aidevelop&no=3524");
+  for (const value of ["https://m.dcinside.com/board/aidevelop/3524", "https://m.dcinside.com/board/aidevelop/3524?recommend=1#comment",
+    "https://gall.dcinside.com/aidevelop/3524", "http://m.dcinside.com/board/aidevelop/3524/"]) {
+    assert.deepEqual(parsePostInput(value), expected);
+  }
+  const minor = "https://gall.dcinside.com/mgallery/board/view/?id=aidevelop&no=3524";
+  assert.deepEqual(parsePostInput(minor), parsePostUrl(minor));
+  for (const value of ["https://m.dcinside.com/board/aidevelop", "https://m.dcinside.com.evil.test/board/aidevelop/3524",
+    "https://m.dcinside.com@evil.test/board/aidevelop/3524", "https://user@m.dcinside.com/board/aidevelop/3524",
+    "https://m.dcinside.com:444/board/aidevelop/3524", "https://gall.dcinside.com/board/lists/?id=aidevelop&no=3524"]) {
+    assert.throws(() => parsePostInput(value));
+  }
+});
+
+test("공유 주소의 디시 이동 안내를 따라 같은 글의 종류와 참가자 키를 확정", async (t) => {
+  const raw = { comments: [{ no: "1", user_id: "alpha", name: "ㅇㅇ", memo: "참여" }], total_cnt: 1 };
+  let method = "script";
+  let kind = "mgallery";
+  t.mock.method(globalThis, "fetch", async (url) => {
+    const address = String(url);
+    if (address.includes("/board/comment/")) return Response.json(raw);
+    if (address.includes("/" + kind + "/board/view/")) return new Response('<span class="title_subject">나눔</span><input name="e_s_n_o" value="token">');
+    const destination = `https://gall.dcinside.com/${kind}/board/view/?id=aidevelop&no=3524`;
+    return method === "http" ? new Response(null, { status: 302, headers: { location: destination } })
+      : new Response('<script>location.replace("' + destination + '");</script>');
+  });
+  for (const redirectMethod of ["script", "http"]) {
+    method = redirectMethod;
+    for (const galleryKind of ["mgallery", "mini"]) {
+      kind = galleryKind;
+      let body;
+      const res = { setHeader() {}, end(value) { body = JSON.parse(value); } };
+      await commentsHandler({ method: "POST", headers: {}, body: {
+        postUrl: "https://m.dcinside.com/board/aidevelop/3524", sessionKey, startPage: 1, count: 1,
+      } }, res);
+      assert.equal(res.statusCode, 200);
+      assert.equal(body.post.type, kind);
+      const expected = parseComments(raw, body.post, sessionKey)[0];
+      assert.equal(body.pages[0].comments[0].authorKey, expected.authorKey);
+    }
+  }
+});
+
+test("주소 이동은 다른 호스트·다른 글·반복 이동을 따라가지 않음", async (t) => {
+  const target = parsePostUrl("https://gall.dcinside.com/board/view/?id=aidevelop&no=3524");
+  let destination;
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    calls += 1;
+    return new Response(null, { status: 302, headers: { location: destination } });
+  });
+  for (const redirect of ["https://evil.test/board/view/?id=aidevelop&no=3524",
+    "http://gall.dcinside.com/board/view/?id=aidevelop&no=3524", "https://gall.dcinside.com/board/view/?id=other&no=3524",
+    "https://gall.dcinside.com/board/view/?id=aidevelop&no=3525", target.url]) {
+    destination = redirect;
+    calls = 0;
+    await assert.rejects(loadCommentSource(target, sessionKey));
+    assert.equal(calls, 1, "Do not fetch the rejected destination");
   }
 });
 

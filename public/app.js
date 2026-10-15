@@ -1,4 +1,4 @@
-import { parsePostUrl, evaluationCutoff, periodLabel, criteriaLabel, participantLabel, applyParticipantSelection, collectParticipants, evaluateParticipants, pickWinners } from "/lottery-core.js";
+import { parsePostInput, parsePostUrl, evaluationCutoff, periodLabel, criteriaLabel, participantLabel, applyParticipantSelection, collectParticipants, evaluateParticipants, pickWinners } from "/lottery-core.js";
 import { createRecord, jsonBlob, pngBlob, zipBlob, exportBaseName, downloadBlob } from "/result-export.js";
 
 const $ = (id) => document.getElementById(id);
@@ -142,7 +142,7 @@ async function api(path, body, signal) {
   return result;
 }
 function settingsFromForm() {
-  const target = parsePostUrl($("post-url").value);
+  const target = parsePostInput($("post-url").value);
   const activityMode = $("analysis-form").querySelector('input[name="activity-mode"]:checked').value;
   if (!["separate", "total"].includes(activityMode)) throw new Error("활동 기준 모드를 선택해주세요.");
   const minPosts = activityMode === "separate" ? Number($("min-posts").value) : 0;
@@ -201,7 +201,7 @@ async function run(event) {
     while (nextCommentPage) {
       if (nextCommentPage > 100) throw new Error("댓글이 100페이지를 넘어 전체 참가자를 확인할 수 없습니다. 추첨을 보류합니다.");
       status("댓글 수집 중", "loading", nextCommentPage + "p");
-      const data = await api("/api/comments", { postUrl: settings.url, sessionKey, startPage: nextCommentPage, count: Math.min(3, 101 - nextCommentPage) }, signal);
+      const data = await api("/api/comments", { postUrl: post.url, sessionKey, startPage: nextCommentPage, count: Math.min(3, 101 - nextCommentPage) }, signal);
       post = data.post;
       if (!Array.isArray(data.pages) || !data.pages.length) throw new Error("댓글 페이지 정보가 없습니다.");
       for (const page of data.pages) {

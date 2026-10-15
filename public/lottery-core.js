@@ -1,10 +1,30 @@
-export function parsePostUrl(value) {
+function postUrl(value) {
   let url;
   try { url = new URL(String(value || "").trim().replace(/\\&/g, "&").replace(/&amp;/g, "&")); }
   catch { throw new Error("디시인사이드 게시글 주소를 입력해주세요."); }
-  if (!["http:", "https:"].includes(url.protocol) || url.hostname !== "gall.dcinside.com" || url.username || url.password || url.port) {
-    throw new Error("gall.dcinside.com의 공개 게시글 주소만 사용할 수 있습니다.");
+  if (!["http:", "https:"].includes(url.protocol) || !["gall.dcinside.com", "m.dcinside.com"].includes(url.hostname) || url.username || url.password || url.port) {
+    throw new Error("디시인사이드 PC 또는 모바일 게시글 주소를 입력해주세요.");
   }
+  return url;
+}
+
+export function parsePostInput(value) {
+  const url = postUrl(value);
+  const shared = url.pathname.match(url.hostname === "m.dcinside.com"
+    ? /^\/board\/([\p{L}\p{N}_.-]{1,80})\/([1-9]\d{0,19})\/?$/u
+    : /^\/([\p{L}\p{N}_.-]{1,80})\/([1-9]\d{0,19})\/?$/u);
+  if (shared) {
+    const desktop = new URL("https://gall.dcinside.com/board/view/");
+    desktop.searchParams.set("id", shared[1]);
+    desktop.searchParams.set("no", shared[2]);
+    return parsePostUrl(desktop.href);
+  }
+  return parsePostUrl(url.href);
+}
+
+export function parsePostUrl(value) {
+  const url = postUrl(value);
+  if (url.hostname !== "gall.dcinside.com") throw new Error("지원하지 않는 모바일 주소 형식입니다. 게시글의 공유 주소를 복사해주세요.");
   const path = url.pathname.match(/^\/(?:(mgallery|mini)\/)?board\/view\/?$/);
   const id = url.searchParams.get("id") || "";
   const no = url.searchParams.get("no") || "";

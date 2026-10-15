@@ -15,7 +15,7 @@
       <form id="analysis-form">
         <fieldset class="settings-panel">
           <legend class="settings-legend"><span>추첨 설정</span><button id="usage-button" class="usage-button" type="button" aria-haspopup="dialog" aria-controls="usage-guide">사용법</button></legend>
-          <label class="field-label" for="post-url">게시글 주소</label>
+          <label class="field-label" for="post-url">게시글 주소 · PC/모바일</label>
           <div class="url-row">
             <input id="post-url" type="url" placeholder="https://gall.dcinside.com/…" required maxlength="2048" autocomplete="off" spellcheck="false">
             <button id="example-button" class="text-button" type="button">예시</button>
@@ -99,7 +99,7 @@
         <p>갤로그의 글·댓글 목록 중 하나라도 비공개면 추첨 후보에서 제외합니다. <strong>추첨글이 올라온 갤러리의 활동 내역도 공개해야 합니다.</strong> 해당 내역을 숨기면 실제 활동이 있어도 0건·기준 미달로 제외될 수 있습니다. 다른 갤러리의 활동은 평가하지 않습니다.</p>
       </section>
       <ol class="usage-steps">
-        <li><h3>나눔 게시글 주소 입력</h3><p>일반·마이너·미니 갤러리의 추첨글 주소를 붙여 넣습니다. 같은 계정의 중복 댓글은 참가자 1명으로 묶고, 갤로그가 없는 유동은 제외합니다.</p></li>
+        <li><h3>나눔 게시글 주소 입력</h3><p>일반·마이너·미니 갤러리의 추첨글 주소를 붙여 넣습니다. PC·모바일·단축 공유 주소를 지원하며 갤러리 종류는 게시글에서 확인합니다. 같은 계정의 중복 댓글은 참가자 1명으로 묶고, 갤로그가 없는 유동은 제외합니다.</p></li>
         <li><h3>당첨 인원과 활동 기준 설정</h3><p>기본값은 <strong>기간 제한 없음</strong>으로, 공개된 전체 기간의 활동을 평가합니다. 기간을 정하려면 ‘개월’을 선택하고 최근 1~24개월을 입력합니다.</p><ul><li><strong>최소 글·댓글:</strong> 글과 댓글의 개별 기준을 모두 충족해야 합니다.</li><li><strong>글댓합:</strong> 글 수와 댓글 수의 합계만 판정합니다.</li></ul><p>0개로 둔 건수 기준은 적용하지 않지만, 갤로그 공개 여부는 계속 확인합니다. 추첨글 자체와 그 글의 참여 댓글은 활동 건수에서 뺍니다.</p></li>
         <li><h3>필요한 참여 조건 선택</h3><p>‘추가 설정’에서 참여 키워드, 대댓글 포함, 글쓴이 제외 여부를 정합니다. 기본값은 전체 댓글 대상, 대댓글 포함, 글쓴이 제외입니다.</p></li>
         <li><h3>명단을 확인한 뒤 추첨</h3><p>‘참가자 확인’을 누르면 댓글 수집 → 활동 확인 → 명단 확인 순서로 진행하며, 자동으로 추첨하지 않습니다. 닉네임 뒤 괄호에 공개 식별코드를 표시합니다. 초록색 ‘포함’, 빨간색 ‘불포함’, 노란색 ‘미확인’ 명단과 판정 사유를 먼저 확인합니다.</p><p>활동 기준을 통과한 사람은 포함·불포함을 조정할 수 있습니다. 비공개·기준 미달·미확인 참가자는 포함할 수 없습니다. 위 설정에서 당첨 인원을 정하고 ‘포함 대상 추첨하기’를 눌러야 추첨합니다. 다른 조건을 바꾸면 참가자를 다시 확인해야 합니다. 추첨 후에는 명단이 고정되며, ‘다시 추첨’은 같은 후보 중 새로 뽑습니다.</p><p>‘PNG 저장’은 당첨자·식별코드·조건·추첨 번호가 담긴 결과 이미지, ‘JSON 저장’은 설정·공개 식별코드·포함 여부·참가자 판정·이번 실행의 재추첨 내역·최근 120개 처리 로그가 담긴 기록 파일을 받습니다. ‘ZIP 저장’은 같은 결과의 PNG와 JSON을 하나로 묶습니다. PNG·ZIP은 당첨자가 나온 뒤, JSON은 명단 확인·중단·보류 후에도 저장할 수 있습니다. 파일은 기기에 내려받으며 서버에는 보관하지 않습니다.</p></li>

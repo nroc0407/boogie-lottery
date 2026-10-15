@@ -1,4 +1,4 @@
-import { parsePostUrl } from "../public/lottery-core.js";
+import { parsePostInput, parsePostUrl } from "../public/lottery-core.js";
 import { requestBody, respond, attr, decode, text, writerIdentity, authorHash, dcFetch, delay } from "../lib/dcinside.js";
 
 function input(html, name) {
@@ -27,11 +27,29 @@ export function nextPage(pagination, page) {
 }
 
 export async function loadCommentSource(gallery, sessionKey) {
-  const detail = await dcFetch(gallery.url);
-  const html = await detail.text();
-  const title = text(html.match(/<span\b[^>]*class=["'][^"']*\btitle_subject\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/i)?.[1], 200);
-  const token = input(html, "e_s_n_o");
-  if (!title || !token) throw new Error("공개 게시글 또는 댓글 정보를 찾지 못했습니다. 삭제·비공개·접근 제한 여부를 확인해주세요.");
+  const original = gallery;
+  const visited = new Set();
+  let detail, html, title, token;
+  for (let hop = 0; hop < 3; hop += 1) {
+    if (visited.has(gallery.url)) throw new Error("게시글 주소 이동이 반복되어 읽을 수 없습니다.");
+    visited.add(gallery.url);
+    detail = await dcFetch(gallery.url, { allowRedirect: true });
+    html = await detail.text();
+    title = text(html.match(/<span\b[^>]*class=["'][^"']*\btitle_subject\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/i)?.[1], 200);
+    token = input(html, "e_s_n_o");
+    if (detail.ok && title && token) break;
+    // DC may send a small script when a shared URL needs the minor/mini path.
+    // Read only its literal destination; never execute upstream JavaScript.
+    const redirect = detail.headers.get("location") || html.match(/(?:window\.)?location\.replace\(\s*["']([^"']+)["']\s*\)/i)?.[1]
+      || html.match(/(?:window\.)?location\.href\s*=\s*["']([^"']+)["']/i)?.[1];
+    if (!redirect) throw new Error("게시글 또는 댓글 정보를 읽지 못했습니다. 삭제·비공개·접근 제한 여부를 확인하고, 공개 글이라면 잠시 뒤 다시 시도해주세요.");
+    const target = new URL(decode(redirect), gallery.url);
+    if (target.protocol !== "https:") throw new Error("게시글 이동 주소를 확인할 수 없습니다.");
+    const next = parsePostUrl(target.href);
+    if (next.id !== original.id || next.no !== original.no) throw new Error("입력한 게시글과 이동 주소가 달라 읽기를 중단했습니다.");
+    if (hop === 2) throw new Error("게시글 주소 이동이 너무 많아 읽을 수 없습니다.");
+    gallery = next;
+  }
   const writerTag = html.match(/<(?:div|span)\b[^>]*class=["'][^"']*\bgall_writer\b[^"']*["'][^>]*>/i)?.[0] || "";
   const name = decode(attr(writerTag, "data-nick")).trim();
   const uid = decode(attr(writerTag, "data-uid")).trim();
@@ -65,7 +83,7 @@ export default async function handler(req, res) {
   const body = requestBody(req, res);
   if (!body) return;
   let gallery;
-  try { gallery = parsePostUrl(body.postUrl); } catch (error) { respond(res, 400, { error: error.message }); return; }
+  try { gallery = parsePostInput(body.postUrl); } catch (error) { respond(res, 400, { error: error.message }); return; }
   const startPage = Number(body.startPage || 1);
   const count = Number(body.count || 1);
   if (!Number.isInteger(startPage) || startPage < 1 || startPage > 100 || !Number.isInteger(count) || count < 1 || count > 3 || startPage + count - 1 > 100) { respond(res, 400, { error: "댓글은 한 번에 3페이지, 최대 100페이지까지 조회할 수 있습니다." }); return; }
@@ -75,7 +93,7 @@ export default async function handler(req, res) {
     for (let offset = 0; offset < count; offset += 1) {
       const page = startPage + offset;
       const data = await readCommentPage(source, page);
-      const comments = parseComments(data, gallery, body.sessionKey);
+      const comments = parseComments(data, source.gallery, body.sessionKey);
       const next = data.nextPage;
       pages.push({ page, comments, nextPage: next, totalCount: Number(data.total_cnt) || 0 });
       if (!next) break;
