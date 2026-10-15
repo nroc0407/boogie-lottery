@@ -1,9 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { webcrypto } from "node:crypto";
-import { parsePostUrl, sixMonthCutoff, collectParticipants, evaluateParticipants, pickWinners } from "../public/lottery-core.js";
+import { parsePostUrl, sixMonthCutoff, evaluationCutoff, periodLabel, collectParticipants, evaluateParticipants, pickWinners } from "../public/lottery-core.js";
 import { parseComments, nextPage } from "../api/comments.js";
 import { parsePosts } from "../api/pages.js";
+import activityHandler from "../api/comment-activity.js";
 
 const gallery = { id: "aidevelop", type: "mgallery" };
 const sessionKey = "a".repeat(64);
@@ -22,6 +23,58 @@ test("게시글 URL은 일반·마이너·미니만 허용하고 다른 호스�
 test("6개월 경계는 한국 날짜의 월말에 맞춰 계산", () => {
   const asOf = Date.parse("2026-10-31T12:34:56+09:00");
   assert.equal(sixMonthCutoff(asOf), Date.parse("2026-04-30T12:34:56+09:00"));
+});
+
+test("평가기간은 제한 없음과 월 단위를 지원하고 일 단위는 거부", () => {
+  const asOf = Date.parse("2026-10-31T12:34:56+09:00");
+  assert.equal(evaluationCutoff(asOf, 0, "all"), 0);
+  assert.equal(periodLabel({ periodUnit: "all", periodValue: 0 }), "기간 제한 없음");
+  assert.equal(evaluationCutoff(asOf, 6, "months"), Date.parse("2026-04-30T00:00:00+09:00"));
+  assert.equal(evaluationCutoff(asOf, 24, "months"), Date.parse("2024-10-31T00:00:00+09:00"));
+  for (const [value, unit] of [[1, "days"], [0, "months"], [25, "months"]]) {
+    assert.throws(() => evaluationCutoff(asOf, value, unit));
+  }
+  assert.throws(() => evaluationCutoff(NaN, 0, "all"));
+});
+
+test("활동 API는 기간 제한 없음에서 2년 이전 기록도 집계하고 공개 조건은 유지", async (t) => {
+  const target = parsePostUrl("https://gall.dcinside.com/mgallery/board/view/?id=aidevelop&no=3524");
+  const raw = { comments: [{ no: "1", user_id: "alpha", name: "참가자", memo: "참여" }], total_cnt: 1 };
+  const authorKey = parseComments(raw, target, sessionKey)[0].authorKey;
+  const oldProfile = '<span class="bluebox">공개</span><ul class="cont_listbox"><li data-no="77">'
+    + '<a class="link" href="https://gall.dcinside.com/mgallery/board/view/?id=aidevelop&amp;no=42">활동</a>'
+    + '<span class="date">2020.01.02</span></li></ul><div class="bottom_paging_box">1</div>';
+  let privateProfile = false;
+  t.mock.method(globalThis, "fetch", async (url) => {
+    if (String(url).startsWith("https://gallog.dcinside.com/")) {
+      return new Response(privateProfile ? '<span class="greybox">비공개</span>' : oldProfile);
+    }
+    if (String(url).includes("/board/comment/")) return Response.json(raw);
+    return new Response('<span class="title_subject">나눔</span><input name="e_s_n_o" value="token">');
+  });
+  const asOf = Date.now();
+  const query = { postUrl: target.url, sessionKey, authorKey, sourcePage: 1, kind: "post", startPage: 1, count: 1,
+    cutoff: 0, asOf, periodUnit: "all" };
+  const request = async (changes = {}) => {
+    let body;
+    const res = { setHeader() {}, end(value) { body = JSON.parse(value); } };
+    await activityHandler({ method: "POST", headers: {}, body: { ...query, ...changes } }, res);
+    return { status: res.statusCode, body };
+  };
+  const unlimited = await request();
+  assert.equal(unlimited.status, 200);
+  assert.equal(unlimited.body.pages[0].entries[0].ts, Date.parse("2020-01-02T00:00:00+09:00"));
+  const bounded = await request({ periodUnit: "months", cutoff: evaluationCutoff(asOf, 6, "months") });
+  assert.equal(bounded.status, 200);
+  assert.equal(bounded.body.pages[0].entries.length, 0);
+  for (const changes of [{ periodUnit: "months" }, { periodUnit: "days" }, { cutoff: 1 }]) {
+    assert.equal((await request(changes)).status, 400);
+  }
+  privateProfile = true;
+  const hidden = await request();
+  assert.equal(hidden.status, 200);
+  assert.equal(hidden.body.profileStatus, "private");
+  assert.deepEqual(hidden.body.pages, []);
 });
 
 test("실제 댓글 형식에서 시스템·삭제 댓글 제외, UID 중복 통합, 동명 계정은 분리", () => {

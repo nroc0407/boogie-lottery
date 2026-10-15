@@ -23,6 +23,7 @@ let lastLog = "";
 
 function number(value) { return Number(value || 0).toLocaleString("ko-KR"); }
 function date(value) { return value ? new Date(value).toLocaleDateString("ko-KR", { timeZone: "Asia/Seoul" }) : "—"; }
+function assessmentRange() { return settings.periodUnit === "all" ? "기간 제한 없음 · " + date(asOf) + "까지" : date(cutoff) + " ~ " + date(asOf); }
 function clock(seconds) { return String(Math.floor(seconds / 60)).padStart(2, "0") + ":" + String(seconds % 60).padStart(2, "0"); }
 function updateElapsed() {
   if (controller) elapsedSeconds = Math.max(0, Math.floor((Date.now() - asOf) / 1000));
@@ -79,6 +80,7 @@ function setRunning(value) {
   $("stop-button").disabled = !value;
   for (const input of $("analysis-form").querySelectorAll("input, select")) input.disabled = value;
   syncActivityMode();
+  syncPeriodMode();
   $("example-button").disabled = value;
   $("start-label").textContent = value ? "처리 중" : "추첨 시작";
   $("redraw-button").disabled = value || !completed || participants.some((p) => p.status === "pending")
@@ -93,6 +95,13 @@ function syncActivityMode() {
     for (const input of field.querySelectorAll("input")) input.disabled = Boolean(controller) || inactive;
   }
   $("activity-help").textContent = mode === "total" ? "글+댓글 합계만 평가 / 0 = 활동 검사 끄기" : "글·댓글 모두 충족 / 0 = 해당 기준 끄기";
+}
+function syncPeriodMode() {
+  const unlimited = $("period-unit").value === "all";
+  $("period-value").hidden = unlimited;
+  $("period-value").disabled = Boolean(controller) || unlimited;
+  $("period-value").required = !unlimited;
+  $("period-value").parentElement.dataset.periodUnit = $("period-unit").value;
 }
 function setPhase(value) {
   phase = value;
@@ -133,8 +142,8 @@ function settingsFromForm() {
   const minPosts = activityMode === "separate" ? Number($("min-posts").value) : 0;
   const minComments = activityMode === "separate" ? Number($("min-comments").value) : 0;
   const minTotal = activityMode === "total" ? Number($("min-total").value) : 0;
-  const periodValue = Number($("period-value").value);
   const periodUnit = $("period-unit").value;
+  const periodValue = periodUnit === "all" ? 0 : Number($("period-value").value);
   const winnerCount = Number($("winner-count").value);
   for (const value of [minPosts, minComments]) {
     if (!Number.isInteger(value) || value < 0 || value > 1000) throw new Error("최소 글·댓글 수는 0~1,000개로 설정해주세요.");
@@ -242,7 +251,7 @@ async function scanProfileActivity(sessionKey, signal, checkable) {
       nextPage: 1, seen: new Set(), fingerprints: new Set(), malformed: false, complete: false, error: "",
     }]));
     const wants = { post: settings.minPosts > 0 || settings.minTotal > 0, comment: settings.minComments > 0 || settings.minTotal > 0 };
-    const body = { postUrl: post.url, sessionKey, authorKey: person.key, sourcePage: person.firstCommentPage, cutoff, asOf };
+    const body = { postUrl: post.url, sessionKey, authorKey: person.key, sourcePage: person.firstCommentPage, cutoff, asOf, periodUnit: settings.periodUnit };
     const syncCoverage = () => {
       activity.postsComplete = states.post.complete;
       activity.commentsComplete = states.comment.complete;
@@ -447,7 +456,7 @@ function render() {
   document.querySelector(".participants-panel").hidden = participants.length === 0;
   document.querySelector(".report-actions").hidden = participants.length === 0;
   $("report-title").textContent = post?.title || "";
-  $("report-subtitle").textContent = post ? post.id + " / " + date(cutoff) + " ~ " + date(asOf) : "";
+  $("report-subtitle").textContent = post ? post.id + " / " + assessmentRange() : "";
   $("source-post").href = post?.url || "#";
   $("participant-count").textContent = number(participants.length) + "명 · 제외 " + excluded + "명";
   $("coverage-label").textContent = periodLabel(settings) + " · " + criteriaLabel(settings) + " · 공개 갤로그 필수 / " + post.id + " 갤러리만 집계";
@@ -471,7 +480,7 @@ function exportCsv() {
       person.commentsChecked ? person.activityCommentCount : "",
       !person.exclusion && (settings.minPosts > 0 || settings.minComments > 0 || settings.minTotal > 0) ? person.totalActivityCount : "",
       person.status, person.reason, winnerKeys.has(person.key) ? "Y" : "N", commentLink(person),
-      new Date(cutoff).toISOString(), new Date(asOf).toISOString(), settings.periodValue, settings.periodUnit, settings.activityMode, settings.minPosts, settings.minComments, settings.minTotal,
+      settings.periodUnit === "all" ? "" : new Date(cutoff).toISOString(), new Date(asOf).toISOString(), settings.periodUnit === "all" ? "" : settings.periodValue, settings.periodUnit, settings.activityMode, settings.minPosts, settings.minComments, settings.minTotal,
       person.profileStatus || "not-checked", post.id, post.type,
       !person.exclusion && (settings.minPosts > 0 || settings.minTotal > 0) ? person.postsComplete : "",
       !person.exclusion && (settings.minComments > 0 || settings.minTotal > 0) ? person.commentsComplete : "", "day"])];
@@ -485,7 +494,7 @@ function exportCsv() {
 async function copyResult() {
   if (!drawn) return;
   const message = ["[부기 추첨자]", post.title, post.url, periodLabel(settings) + " · " + criteriaLabel(settings),
-    "평가기간: " + date(cutoff) + " ~ " + date(asOf),
+    "평가기간: " + assessmentRange(),
     "공개 갤로그 필수 / " + post.id + " 갤러리의 글·댓글만 평가",
     "참가 " + participants.length + "명 / 통과 " + participants.filter((p) => p.status === "eligible").length + "명",
     "", "당첨자", ...drawn.winners.map((person, index) => (index + 1) + ". " + person.name + " (참여 댓글 " + person.firstCommentId + ")"),
@@ -502,10 +511,6 @@ $("export-csv").addEventListener("click", exportCsv);
 $("copy-result").addEventListener("click", copyResult);
 $("example-button").addEventListener("click", () => { $("post-url").value = "https://gall.dcinside.com/mgallery/board/view/?id=aidevelop&no=3524"; });
 for (const input of $("analysis-form").querySelectorAll('input[name="activity-mode"]')) input.addEventListener("change", syncActivityMode);
-$("period-unit").addEventListener("change", () => {
-  const maximum = $("period-unit").value === "days" ? 730 : 24;
-  $("period-value").max = String(maximum);
-  if (Number($("period-value").value) > maximum) $("period-value").value = String(maximum);
-});
+$("period-unit").addEventListener("change", syncPeriodMode);
 setRunning(false);
 setInterval(() => { if (controller) updateElapsed(); }, 1000);

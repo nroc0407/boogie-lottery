@@ -89,12 +89,15 @@ export default async function handler(req, res) {
   const count = Number(body.count || 1);
   const cutoff = Number(body.cutoff);
   const asOf = Number(body.asOf);
+  const periodUnit = body.periodUnit || "months";
+  const validPeriod = periodUnit === "all" ? cutoff === 0
+    : periodUnit === "months" && cutoff > 0 && asOf - cutoff <= 732 * 86400000;
   const accessOnly = body.action === "access";
   const kind = body.kind || "comment";
   if (!/^[0-9a-f]{64}$/i.test(String(body.authorKey || "")) || !Number.isInteger(sourcePage) || sourcePage < 1 || sourcePage > 100
     || !Number.isInteger(startPage) || startPage < 1 || !Number.isInteger(count) || count < 1 || count > 3 || startPage + count - 1 > MAX_PROFILE_PAGES
-    || !Object.hasOwn(PATHS, kind) || !Number.isSafeInteger(cutoff) || !Number.isSafeInteger(asOf) || cutoff <= 0 || cutoff > asOf
-    || asOf > Date.now() + 60000 || asOf - cutoff > 732 * 86400000 || (body.action && !accessOnly)) {
+    || !Object.hasOwn(PATHS, kind) || !Number.isSafeInteger(cutoff) || !Number.isSafeInteger(asOf) || !validPeriod || cutoff > asOf
+    || asOf <= 0 || asOf > Date.now() + 60000 || (body.action && !accessOnly)) {
     respond(res, 400, { error: "갤로그 조회 대상·기간·페이지가 올바르지 않습니다." }); return;
   }
   const pages = [];

@@ -68,6 +68,7 @@ input:disabled, select:disabled { opacity: .55; }
 .input-group > span { flex: 0 0 auto; color: var(--muted); font-size: 12px; }
 .input-group:focus-within { border-color: var(--bright); }
 .period-control select { flex: 0 0 auto; width: 62px; height: 32px; padding: 0; border: 0; background: var(--console); color: var(--ink); }
+.period-control[data-period-unit="all"] select { width: 100%; font-size: 12px; }
 .settings-bottom { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-top: 14px; }
 .settings-bottom > small { color: var(--muted); font-size: 11px; text-align: right; padding-top: 2px; }
 .scope-note { margin-top: 12px; color: var(--muted); font-size: 11px; text-align: center; }

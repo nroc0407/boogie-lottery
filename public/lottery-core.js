@@ -27,20 +27,20 @@ export function sixMonthCutoff(asOf) {
 }
 
 export function evaluationCutoff(asOf, value = 6, unit = "months") {
-  if (!Number.isFinite(Number(asOf)) || !Number.isInteger(value) || value < 1
-    || (unit === "months" ? value > 24 : unit === "days" ? value > 730 : true)) {
-    throw new Error("평가기간은 1~24개월 또는 1~730일로 설정해주세요.");
+  if (!Number.isFinite(Number(asOf)) || Number(asOf) <= 0) throw new Error("평가 시각을 확인해주세요.");
+  if (unit === "all") return 0;
+  if (unit !== "months" || !Number.isInteger(value) || value < 1 || value > 24) {
+    throw new Error("평가기간은 제한 없음 또는 최근 1~24개월로 설정해주세요.");
   }
   const kst = new Date(Number(asOf) + 9 * 3_600_000);
   const year = kst.getUTCFullYear();
   const month = kst.getUTCMonth();
-  if (unit === "days") return Date.UTC(year, month, kst.getUTCDate() - value + 1) - 9 * 3_600_000;
   const lastDay = new Date(Date.UTC(year, month - value + 1, 0)).getUTCDate();
   return Date.UTC(year, month - value, Math.min(kst.getUTCDate(), lastDay)) - 9 * 3_600_000;
 }
 
 export function periodLabel(settings) {
-  return `최근 ${settings.periodValue ?? 6}${settings.periodUnit === "days" ? "일" : "개월"}`;
+  return settings.periodUnit === "all" ? "기간 제한 없음" : `최근 ${settings.periodValue ?? 6}개월`;
 }
 
 export function activityCriteria(settings) {
