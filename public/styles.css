@@ -147,6 +147,9 @@ tbody tr:last-child td { border-bottom: 0; }
 #participants-empty { padding-top: 10px; color: var(--muted); font-size: 12px; }
 .report-actions { display: flex; justify-content: center; flex-wrap: wrap; gap: 12px; margin-top: 18px; }
 .report-actions button { font-size: 12px; }
+.export-feedback { margin-top: 10px; color: var(--green); font-size: 12px; text-align: center; }
+.export-feedback:empty { display: none; }
+.export-feedback.is-error { color: var(--red); }
 @keyframes blink { 50% { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .cursor, .app-shell[data-tone="loading"] #status-indicator { animation: none; } }
 @media (min-width: 621px) and (max-width: 820px) { .number-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

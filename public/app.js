@@ -1,4 +1,5 @@
 import { parsePostUrl, evaluationCutoff, periodLabel, criteriaLabel, collectParticipants, evaluateParticipants, pickWinners } from "/lottery-core.js";
+import { createRecord, jsonBlob, pngBlob, zipBlob, exportBaseName, downloadBlob } from "/result-export.js";
 
 const $ = (id) => document.getElementById(id);
 const MAX_PAGES = 2000;
@@ -13,6 +14,9 @@ let profileScanCount = 0;
 let nextRequestAt = 0;
 let completed = false;
 let drawn = null;
+let draws = [];
+let progressHistory = [];
+let exportBusy = false;
 let settings = null;
 let asOf = 0;
 let cutoff = 0;
@@ -41,6 +45,8 @@ function appendLog(message, tone = "info", detail = "") {
   const time = document.createElement("span");
   time.className = "log-time";
   time.textContent = clock(asOf ? Math.max(0, Math.floor((Date.now() - asOf) / 1000)) : 0);
+  progressHistory.push({ elapsed: time.textContent, tone, message, detail });
+  if (progressHistory.length > 120) progressHistory.shift();
   const content = document.createElement("span");
   content.className = "log-message";
   content.textContent = message;
@@ -83,8 +89,7 @@ function setRunning(value) {
   syncPeriodMode();
   $("example-button").disabled = value;
   $("start-label").textContent = value ? "처리 중" : "추첨 시작";
-  $("redraw-button").disabled = value || !completed || participants.some((p) => p.status === "pending")
-    || participants.filter((p) => p.status === "eligible").length < (settings?.winnerCount || 1);
+  updateExportButtons();
 }
 function syncActivityMode() {
   const mode = $("analysis-form").querySelector('input[name="activity-mode"]:checked').value;
@@ -156,7 +161,7 @@ function settingsFromForm() {
 }
 async function run(event) {
   event.preventDefault();
-  if (controller) return;
+  if (controller || exportBusy) return;
   let input;
   try { input = settingsFromForm(); } catch (error) { status(error.message, "error"); return; }
   settings = input;
@@ -169,6 +174,9 @@ async function run(event) {
   profileScanCount = 0;
   completed = false;
   drawn = null;
+  draws = [];
+  progressHistory = [];
+  $("export-feedback").textContent = "";
   asOf = Date.now();
   elapsedSeconds = 0;
   lastLog = "";
@@ -366,15 +374,17 @@ async function scanProfileActivity(sessionKey, signal, checkable) {
   }
 }
 function makeDraw() {
+  $("export-feedback").textContent = "";
   setPhase("draw");
   appendLog("당첨자 추첨 / 후보 " + participants.filter((person) => person.status === "eligible").length + "명");
   const winners = pickWinners(participants, settings.winnerCount);
   drawn = { id: crypto.randomUUID(), at: Date.now(), winners };
+  draws.push(drawn);
   setPhase("done");
   render();
 }
 function redraw() {
-  if (controller || !completed) return;
+  if (controller || exportBusy || !completed) return;
   try { makeDraw(); status("재추첨 완료", "success", drawn.winners.length + "명 당첨"); }
   catch (error) { status(error.message, "error"); }
 }
@@ -454,7 +464,7 @@ function render() {
   if ($("results").hidden) return;
   document.querySelector(".results-heading").hidden = !post?.title;
   document.querySelector(".participants-panel").hidden = participants.length === 0;
-  document.querySelector(".report-actions").hidden = participants.length === 0;
+  document.querySelector(".report-actions").hidden = !asOf;
   $("report-title").textContent = post?.title || "";
   $("report-subtitle").textContent = post ? post.id + " / " + assessmentRange() : "";
   $("source-post").href = post?.url || "#";
@@ -462,6 +472,7 @@ function render() {
   $("coverage-label").textContent = periodLabel(settings) + " · " + criteriaLabel(settings) + " · 공개 갤로그 필수 / " + post.id + " 갤러리만 집계";
   $("export-csv").disabled = participants.length === 0;
   $("copy-result").disabled = !drawn;
+  updateExportButtons();
   renderRows();
   renderWinners();
 }
@@ -491,6 +502,42 @@ function exportCsv() {
   anchor.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+function updateExportButtons() {
+  const busy = exportBusy || Boolean(controller);
+  $("start-button").disabled = busy;
+  $("redraw-button").disabled = busy || !completed || participants.some((p) => p.status === "pending")
+    || participants.filter((p) => p.status === "eligible").length < (settings?.winnerCount || 1);
+  $("export-png").disabled = busy || !drawn;
+  $("export-json").disabled = busy || !asOf;
+  $("export-zip").disabled = busy || !drawn;
+}
+async function exportFiles(format) {
+  if (exportBusy || controller || !asOf || (format !== "json" && !drawn)) return;
+  const record = createRecord({ post, settings, participants, commentsCount: comments.length, cutoff, asOf, completed,
+    phase, tone: statusTone, message: $("status-text").textContent, draws, logs: progressHistory });
+  const name = exportBaseName(record);
+  exportBusy = true;
+  updateExportButtons();
+  $("export-feedback").className = "export-feedback";
+  $("export-feedback").textContent = format.toUpperCase() + " 만드는 중…";
+  try {
+    let blob;
+    if (format === "json") blob = jsonBlob(record);
+    else {
+      const png = await pngBlob(record);
+      blob = format === "png" ? png : await zipBlob([
+        { name: name + ".png", blob: png }, { name: name + ".json", blob: jsonBlob(record) },
+      ], record.exportedAt);
+    }
+    downloadBlob(blob, name + "." + format);
+    $("export-feedback").textContent = format.toUpperCase() + " 다운로드를 시작했습니다.";
+    appendLog(format.toUpperCase() + " 저장", "success");
+  } catch (error) {
+    $("export-feedback").className = "export-feedback is-error";
+    $("export-feedback").textContent = error.message || "파일 저장에 실패했습니다.";
+  }
+  finally { exportBusy = false; updateExportButtons(); }
+}
 async function copyResult() {
   if (!drawn) return;
   const message = ["[부기 추첨자]", post.title, post.url, periodLabel(settings) + " · " + criteriaLabel(settings),
@@ -508,6 +555,9 @@ $("usage-close").addEventListener("click", () => $("usage-guide").close());
 $("stop-button").addEventListener("click", () => controller?.abort());
 $("redraw-button").addEventListener("click", redraw);
 $("export-csv").addEventListener("click", exportCsv);
+$("export-png").addEventListener("click", () => exportFiles("png"));
+$("export-json").addEventListener("click", () => exportFiles("json"));
+$("export-zip").addEventListener("click", () => exportFiles("zip"));
 $("copy-result").addEventListener("click", copyResult);
 $("example-button").addEventListener("click", () => { $("post-url").value = "https://gall.dcinside.com/mgallery/board/view/?id=aidevelop&no=3524"; });
 for (const input of $("analysis-form").querySelectorAll('input[name="activity-mode"]')) input.addEventListener("change", syncActivityMode);

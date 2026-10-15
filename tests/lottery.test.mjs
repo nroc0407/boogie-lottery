@@ -5,6 +5,7 @@ import { parsePostUrl, sixMonthCutoff, evaluationCutoff, periodLabel, collectPar
 import { parseComments, nextPage } from "../api/comments.js";
 import { parsePosts } from "../api/pages.js";
 import activityHandler from "../api/comment-activity.js";
+import { createRecord } from "../public/result-export.js";
 
 const gallery = { id: "aidevelop", type: "mgallery" };
 const sessionKey = "a".repeat(64);
@@ -134,4 +135,27 @@ test("추첨은 중복 없는 동일 확률 표본이며 모듈로 편향 값은
 test("댓글 페이지 이동은 DC viewComments와 마지막 페이지를 구분", () => {
   assert.equal(nextPage('<em>1</em><a href="javascript:viewComments(2,\'N\')">2</a>', 1), 2);
   assert.equal(nextPage('<a onclick="viewComments(1,\'N\')">1</a><em>2</em>', 2), null);
+});
+
+test("JSON 기록은 재추첨 내역과 판정을 보존하고 원 식별자·본문·세션 키는 내보내지 않음", () => {
+  const at = Date.parse("2026-10-15T12:00:00+09:00");
+  const person = { key: "internal-author-key", uid: "private-user-id", ip: "private-ip", content: "private-comment-body",
+    name: "참가자", identityType: "uid", firstCommentId: "123", commentCount: 2, profileStatus: "public",
+    status: "eligible", reason: "활동 기준 충족", postCount: 3, activityCommentCount: 0, totalActivityCount: 3, lastActivity: at, exclusion: "" };
+  const record = createRecord({ post: { id: "aidevelop", type: "mgallery", no: "3524", title: "나눔", url: "https://gall.dcinside.com/mgallery/board/view/?id=aidevelop&no=3524", authorKey: "private-post-key" },
+    settings: { winnerCount: 1, periodUnit: "all", periodValue: 0, activityMode: "separate", minPosts: 3, minComments: 0, minTotal: 0, requirePublicGallog: true, includeReplies: true, excludeAuthor: true, keyword: "", sessionKey: "private-session-key" },
+    participants: [person, { ...person, firstCommentId: "456", exclusion: "갤로그 비공개", status: "excluded" }], commentsCount: 3,
+    cutoff: 0, asOf: at, completed: true, phase: "done", tone: "success", message: "추첨 완료",
+    draws: [{ id: "first", at, winners: [person] }, { id: "second", at: at + 1000, winners: [person] }],
+    logs: [{ elapsed: "00:01", tone: "success", message: "추첨 완료", detail: "" }] }, at + 2000);
+  assert.equal(record.latestDrawId, "second");
+  assert.deepEqual(record.draws.map((draw) => draw.sequence), [1, 2]);
+  assert.equal(record.assessment.from, null);
+  assert.equal(record.participants[1].confirmedPosts, null);
+  assert.equal(new URL(record.draws[1].winners[0].entryCommentUrl).searchParams.get("fcno"), "123");
+  assert.equal(record.summary.excluded, 1);
+  const serialized = JSON.stringify(record);
+  for (const secret of ["internal-author-key", "private-user-id", "private-ip", "private-comment-body", "private-post-key", "private-session-key"]) {
+    assert.ok(!serialized.includes(secret));
+  }
 });

@@ -15,7 +15,7 @@ assert.equal(lock.packages[""].version, pkg.version);
 assert.equal(config.framework, null);
 assert.equal(config.outputDirectory, "public");
 assert.equal(config.functions["api/*.js"].maxDuration, 30);
-for (const path of ["public/index.html", "public/app.js", "public/lottery-core.js", "public/styles.css",
+for (const path of ["public/index.html", "public/app.js", "public/lottery-core.js", "public/result-export.js", "public/styles.css",
   "public/styles-base.css", "api/comments.js", "api/pages.js", "api/comment-activity.js", "lib/dcinside.js"]) await readFile(new URL(path, root));
 let checked = 0;
 for (const directory of ["api", "lib", "public", "scripts", "tests"]) {
