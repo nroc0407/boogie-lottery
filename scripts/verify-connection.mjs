@@ -22,12 +22,12 @@ try {
   page.on("console", (message) => { if (message.type() === "error") consoleErrors.push(message.text()); });
   page.on("response", (response) => {
     const path = new URL(response.url()).pathname;
-    if (["/", "/app.js", "/lottery-core.js", "/styles.css"].includes(path)) assetResponses.push({ path, status: response.status() });
-    if (path === "/api/comments" || path === "/api/pages") pendingResponses.push((async () => {
+    if (["/", "/app.js", "/lottery-core.js", "/result-export.js", "/styles.css"].includes(path)) assetResponses.push({ path, status: response.status() });
+    if (path === "/api/comments" || path === "/api/comment-activity") pendingResponses.push((async () => {
       const body = await response.json();
       apiResponses.push({ path, status: response.status(), pages: body.pages?.length || 0,
         comments: (body.pages || []).reduce((sum, item) => sum + (item.comments?.length || 0), 0),
-        posts: (body.pages || []).reduce((sum, item) => sum + (item.posts?.length || 0), 0), error: body.error || "" });
+        posts: (body.pages || []).reduce((sum, item) => sum + (item.kind === "post" ? item.entries?.length || 0 : 0), 0), error: body.error || "" });
     })());
   });
   const origin = options.get("--url") || "http://127.0.0.1:4387";
@@ -39,9 +39,14 @@ try {
   await page.locator("#winner-count").fill("2");
   await page.locator("#min-posts").fill("3");
   await page.locator("#start-button").click();
-  console.log("Started actual comment → activity → automatic draw check.");
+  console.log("Started actual comment → activity → preview → confirmed draw check.");
   await page.waitForFunction(() => !document.getElementById("start-button").disabled, null, { timeout: 180_000 });
   await Promise.all(pendingResponses);
+  const previewMessage = await page.locator("#status-text").textContent();
+  assert.equal(await page.locator("#status-banner").evaluate((node) => node.classList.contains("is-error")), false, previewMessage);
+  assert.equal(await page.locator("#preview-panel").isVisible(), true);
+  assert.equal(await page.locator("#winner-section").isVisible(), false, "Preview must not automatically draw winners");
+  await page.locator("#draw-button").click();
   const message = await page.locator("#status-text").textContent();
   assert.equal(await page.locator("#status-banner").evaluate((node) => node.classList.contains("is-error")), false, message);
   assert.equal(await page.locator("#winner-section").isVisible(), true, message);
@@ -57,11 +62,11 @@ try {
   assert.equal(await count("metric-pending"), 0);
   assert.equal(await page.locator("#participant-table tr").count(), participantCount);
   assert.ok(apiResponses.some((item) => item.path === "/api/comments" && item.status === 200 && item.comments > 0));
-  assert.ok(apiResponses.some((item) => item.path === "/api/pages" && item.status === 200 && item.posts > 0));
+  assert.ok(apiResponses.some((item) => item.path === "/api/comment-activity" && item.status === 200 && item.posts > 0));
   const winnerLinks = await page.locator("#winner-list a").evaluateAll((nodes) => nodes.map((node) => node.href));
   assert.equal(new Set(winnerLinks).size, 2);
   assert.ok(winnerLinks.every((link) => new URL(link).searchParams.has("fcno")));
-  for (const path of ["/", "/app.js", "/lottery-core.js", "/styles.css"]) {
+  for (const path of ["/", "/app.js", "/lottery-core.js", "/result-export.js", "/styles.css"]) {
     assert.ok(assetResponses.some((item) => item.path === path && item.status === 200), path + " must load");
   }
   const downloadPromise = page.waitForEvent("download");

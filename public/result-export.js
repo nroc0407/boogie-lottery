@@ -1,4 +1,4 @@
-import { criteriaLabel, periodLabel } from "./lottery-core.js";
+import { criteriaLabel, periodLabel, participantLabel } from "./lottery-core.js";
 
 export function createRecord({ post, settings, participants, commentsCount, cutoff, asOf, completed, phase, tone, message, draws, logs }, exportedAt = Date.now()) {
   const link = (person) => {
@@ -8,6 +8,8 @@ export function createRecord({ post, settings, participants, commentsCount, cuto
   };
   const personRecord = (person) => ({
     name: person.name,
+    identityCode: person.identityCode || "",
+    displayName: participantLabel(person),
     identityType: person.identityType,
     entryCommentId: person.firstCommentId,
     entryCommentUrl: link(person),
@@ -15,6 +17,10 @@ export function createRecord({ post, settings, participants, commentsCount, cuto
     profileStatus: person.profileStatus || "not-checked",
     status: person.status,
     reason: person.reason,
+    automaticStatus: person.automaticStatus || person.status,
+    automaticReason: person.automaticReason ?? person.reason,
+    included: person.included ?? person.status === "eligible",
+    manuallyExcluded: Boolean(person.manuallyExcluded),
     confirmedPosts: !person.exclusion && (settings.minPosts > 0 || settings.minTotal > 0) ? person.postCount : null,
     confirmedComments: person.commentsChecked ? person.activityCommentCount : null,
     confirmedTotal: !person.exclusion && (settings.minPosts > 0 || settings.minComments > 0 || settings.minTotal > 0) ? person.totalActivityCount : null,
@@ -42,12 +48,13 @@ export function createRecord({ post, settings, participants, commentsCount, cuto
       commentsCollected: commentsCount,
       participants: participants.length,
       eligible: participants.filter((person) => person.status === "eligible").length,
+      automaticEligible: participants.filter((person) => (person.automaticStatus || person.status) === "eligible").length,
       excluded: participants.filter((person) => person.status === "excluded").length,
       pending: participants.filter((person) => person.status === "pending").length,
     },
     participants: participants.map(personRecord),
     latestDrawId: draws.at(-1)?.id || null,
-    draws: draws.map((draw, index) => ({ id: draw.id, sequence: index + 1, at: new Date(draw.at).toISOString(),
+    draws: draws.map((draw, index) => ({ id: draw.id, sequence: index + 1, winnerCount: draw.winners.length, at: new Date(draw.at).toISOString(),
       winners: draw.winners.map((person, rank) => ({ rank: rank + 1, ...personRecord(person) })) })),
     logs: { retainedLimit: 120, entries: logs.map((entry) => ({ ...entry })) },
   };
@@ -120,8 +127,8 @@ export async function pngBlob(record) {
     + (record.settings.excludeAuthor ? "글쓴이 제외" : "글쓴이 포함") + " · "
     + (record.settings.keyword ? "키워드 ‘" + record.settings.keyword + "’" : "키워드 제한 없음"), 21, "#8fba9b");
   y += 16;
-  text("참가 " + record.summary.participants + "명 / 통과 " + record.summary.eligible + "명 / 제외 "
-    + record.summary.excluded + "명 / 보류 " + record.summary.pending + "명", 25, "#e1ffe8", 700);
+  text("참가 " + record.summary.participants + "명 / 포함 " + record.summary.eligible + "명 / 불포함 "
+    + record.summary.excluded + "명 / 미확인 " + record.summary.pending + "명", 25, "#e1ffe8", 700);
   y += 30;
   text("당첨자 " + draw.winners.length + "명", 26, "#52e883", 700);
   y += 14;
@@ -131,7 +138,7 @@ export async function pngBlob(record) {
   const detailFont = "400 19px " + fontFamily;
   for (let index = 0; index < draw.winners.length; index += columns) {
     const row = draw.winners.slice(index, index + columns).map((person, column) => {
-      const name = wrapLines(context, person.name, cardWidth - 48, nameFont);
+      const name = wrapLines(context, participantLabel(person), cardWidth - 48, nameFont);
       const details = [person.confirmedPosts !== null ? "글 " + person.confirmedPosts + "개" : "",
         person.confirmedComments !== null ? "댓글 " + person.confirmedComments + "개" : "", "참여 " + person.entryCommentCount + "개"].filter(Boolean).join(" · ");
       const lines = wrapLines(context, details, cardWidth - 48, detailFont);

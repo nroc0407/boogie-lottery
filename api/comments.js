@@ -15,6 +15,7 @@ export function parseComments(data, gallery, sessionKey) {
     const identity = writerIdentity(uid, ip, name);
     const content = text(raw.memo, 500) || (raw.voice ? "[보이스 댓글]" : /dccon|img/i.test(String(raw.memo)) ? "[디시콘]" : "[내용 미표시]");
     return [{ id, authorKey: authorHash(identity, gallery, sessionKey), authorName: name, authorKnown: Boolean(identity),
+      identityCode: /^[a-z0-9_][a-z0-9_.-]{0,99}$/i.test(uid) ? uid : "",
       identityType: uid ? "uid" : ip ? "ip" : "unknown", authorType: uid ? "registered" : ip ? "guest" : "unknown",
       content, depth: Number(raw.depth) || 0 }];
   });

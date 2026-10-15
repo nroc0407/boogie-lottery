@@ -58,6 +58,20 @@ export function criteriaLabel(settings) {
   return criteria.length ? "개별 기준: " + criteria.join(" · ") + (criteria.length > 1 ? " (모두 충족)" : "") : "개별 기준 없음";
 }
 
+export function participantLabel(person) {
+  return person.name + (person.identityCode ? " (" + person.identityCode + ")" : "");
+}
+
+export function applyParticipantSelection(participants, manualExclusions = new Set()) {
+  return participants.map((person) => {
+    const manuallyExcluded = person.status === "eligible" && manualExclusions.has(person.key);
+    return { ...person, automaticStatus: person.status, automaticReason: person.reason, manuallyExcluded,
+      included: person.status === "eligible" && !manuallyExcluded,
+      status: manuallyExcluded ? "excluded" : person.status,
+      reason: manuallyExcluded ? "운영자 수동 불포함" : person.reason };
+  });
+}
+
 export function collectParticipants(comments, settings, postAuthorKey = "") {
   const people = new Map();
   const keyword = String(settings.keyword || "").trim().toLocaleLowerCase("ko-KR");
@@ -72,7 +86,7 @@ export function collectParticipants(comments, settings, postAuthorKey = "") {
     else if (settings.excludeAuthor && key === postAuthorKey) exclusion = "게시글 작성자";
     else if (settings.requirePublicGallog && comment.identityType !== "uid") exclusion = "연결할 갤로그가 없는 참가자";
     else if (!settings.includeGuests && comment.identityType === "ip") exclusion = "유동 제외 설정";
-    people.set(key, { key, name: comment.authorName, identityType: comment.identityType, authorType: comment.authorType,
+    people.set(key, { key, name: comment.authorName, identityCode: comment.identityCode || "", identityType: comment.identityType, authorType: comment.authorType,
       firstCommentId: comment.id, firstCommentPage: comment.sourcePage || 1, commentCount: 1, content: comment.content, exclusion,
       postCount: 0, activityCommentCount: 0, totalActivityCount: 0, commentsChecked: false, lastActivity: 0, evidenceUrl: "",
       status: exclusion ? "excluded" : "pending", reason: exclusion || "활동 확인 대기" });

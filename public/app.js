@@ -1,4 +1,4 @@
-import { parsePostUrl, evaluationCutoff, periodLabel, criteriaLabel, collectParticipants, evaluateParticipants, pickWinners } from "/lottery-core.js";
+import { parsePostUrl, evaluationCutoff, periodLabel, criteriaLabel, participantLabel, applyParticipantSelection, collectParticipants, evaluateParticipants, pickWinners } from "/lottery-core.js";
 import { createRecord, jsonBlob, pngBlob, zipBlob, exportBaseName, downloadBlob } from "/result-export.js";
 
 const $ = (id) => document.getElementById(id);
@@ -17,6 +17,7 @@ let drawn = null;
 let draws = [];
 let progressHistory = [];
 let exportBusy = false;
+const manualExclusions = new Set();
 let settings = null;
 let asOf = 0;
 let cutoff = 0;
@@ -67,7 +68,7 @@ function renderProgress() {
   $("coverage-detail").textContent = "갤로그 " + number(profileScanCount) + "명 / 글 " + number(scanPages) + "p / 댓글 " + number(commentScanPages) + "p";
   $("coverage-state").textContent = drawn ? "완료" : statusTone === "stopped" ? "중단"
     : statusTone === "error" ? (completed || participants.some((person) => person.status === "pending") ? "보류" : "오류")
-    : controller ? "처리 중" : "대기";
+    : controller ? "처리 중" : completed ? "추첨 대기" : "대기";
 }
 function status(message, tone = "loading", detail = "") {
   statusTone = tone;
@@ -88,7 +89,7 @@ function setRunning(value) {
   syncActivityMode();
   syncPeriodMode();
   $("example-button").disabled = value;
-  $("start-label").textContent = value ? "처리 중" : "추첨 시작";
+  $("start-label").textContent = value ? "확인 중" : "참가자 확인";
   updateExportButtons();
 }
 function syncActivityMode() {
@@ -112,7 +113,7 @@ function setPhase(value) {
   phase = value;
   document.querySelector(".app-shell").dataset.phase = value;
   for (const step of document.querySelectorAll("[data-step]")) {
-    const order = ["comments", "activity", "draw"];
+    const order = ["comments", "activity", "review", "draw"];
     const index = order.indexOf(value);
     step.classList.toggle("is-active", step.dataset.step === value);
     step.classList.toggle("is-done", order.indexOf(step.dataset.step) < index || value === "done");
@@ -176,6 +177,8 @@ async function run(event) {
   drawn = null;
   draws = [];
   progressHistory = [];
+  manualExclusions.clear();
+  $("participant-search").value = "";
   $("export-feedback").textContent = "";
   asOf = Date.now();
   elapsedSeconds = 0;
@@ -226,18 +229,19 @@ async function run(event) {
     await scanProfileActivity(sessionKey, signal, checkable);
     refreshParticipants();
     completed = true;
+    setPhase("review");
     render();
     if (participants.some((person) => person.status === "pending")) {
       throw new Error("미확인 " + participants.filter((person) => person.status === "pending").length + "명 / 추첨 보류");
     }
-    makeDraw();
-    status("추첨 완료", "success", drawn.winners.length + "명 당첨");
+    status("참가자 확인 완료 / 명단을 검토한 뒤 추첨해주세요.", "success", "통과 " + participants.filter((person) => person.status === "eligible").length + "명");
   } catch (error) {
     status(error.name === "AbortError" ? "중단됨 / 추첨 미실행" : error.message,
       error.name === "AbortError" ? "stopped" : "error");
   } finally {
     updateElapsed();
     controller = null;
+    if (completed && !drawn) setPhase("review");
     setRunning(false);
     render();
   }
@@ -308,7 +312,7 @@ async function scanProfileActivity(sessionKey, signal, checkable) {
     };
     const pending = () => participants.find((entry) => entry.key === person.key)?.status === "pending";
     try {
-      status(person.name + " / 갤로그 공개 확인", "loading", (index + 1) + "/" + checkable.length + "명");
+      status(participantLabel(person) + " / 갤로그 공개 확인", "loading", (index + 1) + "/" + checkable.length + "명");
       const access = await api("/api/comment-activity", { ...body, action: "access" }, signal);
       if (access.profileStatus === "public" && (!Array.isArray(access.pages) || access.pages.length !== 2
         || access.pages[0].kind !== "post" || access.pages[1].kind !== "comment"
@@ -332,7 +336,7 @@ async function scanProfileActivity(sessionKey, signal, checkable) {
             syncCoverage();
             continue;
           }
-          status(person.name + " / " + (kind === "post" ? "글" : "댓글") + " 활동 확인", "loading", post.id + " · " + state.nextPage + "p");
+          status(participantLabel(person) + " / " + (kind === "post" ? "글" : "댓글") + " 활동 확인", "loading", post.id + " · " + state.nextPage + "p");
           const data = await api("/api/comment-activity", { ...body, kind, startPage: state.nextPage,
             count: Math.min(3, MAX_PAGES - state.nextPage + 1) }, signal);
           if (["private", "missing"].includes(data.profileStatus)) {
@@ -369,18 +373,39 @@ async function scanProfileActivity(sessionKey, signal, checkable) {
     profileScanCount += 1;
     refreshParticipants();
     const assessed = participants.find((entry) => entry.key === person.key);
-    appendLog(person.name + " / " + assessed.reason,
+    appendLog(participantLabel(person) + " / " + assessed.reason,
       assessed.status === "eligible" ? "success" : assessed.status === "pending" ? "error" : "info");
   }
 }
+function selectedParticipants() { return applyParticipantSelection(participants, manualExclusions); }
+function reviewState(people = selectedParticipants()) {
+  let input = null;
+  try { input = settingsFromForm(); } catch { /* Incomplete inputs keep drawing disabled. */ }
+  const keys = ["url", "activityMode", "minPosts", "minComments", "minTotal", "periodUnit", "periodValue", "includeReplies", "excludeAuthor", "keyword"];
+  const matches = Boolean(input && settings && keys.every((key) => input[key] === settings[key]));
+  const included = people.filter((person) => person.status === "eligible").length;
+  const pending = people.filter((person) => person.status === "pending").length;
+  const winnerCount = input?.winnerCount || settings?.winnerCount || 0;
+  return { matches, included, pending, winnerCount,
+    canDraw: completed && !controller && !exportBusy && matches && !pending && included >= winnerCount && winnerCount > 0 };
+}
 function makeDraw() {
+  const review = reviewState();
+  if (!review.canDraw) throw new Error("포함 대상과 당첨 인원을 확인해주세요. 설정을 바꿨다면 참가자를 다시 확인해야 합니다.");
+  settings.winnerCount = review.winnerCount;
   $("export-feedback").textContent = "";
   setPhase("draw");
-  appendLog("당첨자 추첨 / 후보 " + participants.filter((person) => person.status === "eligible").length + "명");
-  const winners = pickWinners(participants, settings.winnerCount);
+  appendLog("당첨자 추첨 / 포함 " + review.included + "명");
+  const winners = pickWinners(selectedParticipants(), settings.winnerCount);
   drawn = { id: crypto.randomUUID(), at: Date.now(), winners };
   draws.push(drawn);
   setPhase("done");
+  render();
+}
+function confirmDraw() {
+  if (controller || exportBusy || !completed || drawn) return;
+  try { makeDraw(); status("추첨 완료", "success", drawn.winners.length + "명 당첨"); }
+  catch (error) { status(error.message, "error"); }
   render();
 }
 function redraw() {
@@ -393,18 +418,104 @@ function commentLink(person) {
   link.searchParams.set("fcno", person.firstCommentId);
   return link.href;
 }
-function renderRows() {
+function updateReviewControls(review) {
+  const editable = completed && !controller && !drawn && !exportBusy && participants.some((person) => person.status === "eligible");
+  $("include-all").disabled = !editable;
+  $("exclude-all").disabled = !editable;
+  for (const button of $("preview-panel").querySelectorAll("button[data-select-key]")) button.disabled = !editable;
+  $("draw-button").hidden = Boolean(drawn);
+  $("draw-button").disabled = !review.canDraw || Boolean(drawn);
+  $("draw-button").textContent = "포함 " + number(review.included) + "명 중 " + number(review.winnerCount) + "명 추첨하기";
+  let message;
+  if (controller) message = "참가자와 활동 내역을 확인하고 있습니다. 아직 추첨하지 않습니다.";
+  else if (!completed) message = "참가자 확인이 끝나지 않았습니다. 참가자 확인을 다시 실행해주세요.";
+  else if (!review.matches) message = "설정이 변경되었거나 입력이 올바르지 않습니다. 조건을 바꿨다면 참가자를 다시 확인해주세요.";
+  else if (review.pending) message = "미확인 " + number(review.pending) + "명이 있어 추첨을 보류합니다. 확인되지 않은 참가자를 포함할 수 없습니다.";
+  else if (drawn) message = "포함 " + number(review.included) + "명의 명단으로 추첨했습니다. 명단을 바꾸려면 참가자를 다시 확인해주세요.";
+  else if (!review.included) message = "포함된 참가자가 없습니다. 통과자를 포함하거나 설정을 조정해 다시 확인해주세요.";
+  else if (review.included < review.winnerCount) message = "당첨 인원 " + number(review.winnerCount) + "명이 포함 대상 " + number(review.included) + "명보다 많습니다. 위 설정에서 당첨 인원을 줄여주세요.";
+  else message = "포함 " + number(review.included) + "명 중 " + number(review.winnerCount) + "명을 뽑습니다. 명단을 확인한 뒤 추첨 버튼을 눌러주세요.";
+  $("review-message").textContent = message;
+}
+function renderPreview(people) {
+  $("preview-panel").hidden = !people.length;
+  if (!people.length) return;
+  const query = $("participant-search").value.trim().toLocaleLowerCase("ko-KR");
+  const editable = completed && !controller && !drawn && !exportBusy;
+  for (const [group, state] of [["included", "eligible"], ["excluded", "excluded"], ["pending", "pending"]]) {
+    const members = people.filter((person) => person.status === state);
+    const visible = members.filter((person) => !query || participantLabel(person).toLocaleLowerCase("ko-KR").includes(query));
+    $(group + "-count").textContent = number(members.length) + "명";
+    if (group === "pending") $("pending-group").hidden = members.length === 0;
+    const list = $(group + "-list");
+    const scrollTop = list.scrollTop;
+    const fragment = document.createDocumentFragment();
+    for (const person of visible) {
+      const item = document.createElement("li");
+      item.className = "preview-person";
+      item.dataset.status = person.status;
+      const head = document.createElement("div");
+      head.className = "preview-person-head";
+      const link = document.createElement("a");
+      link.className = "participant-name";
+      link.href = commentLink(person); link.target = "_blank"; link.rel = "noopener noreferrer";
+      link.textContent = participantLabel(person);
+      head.append(link);
+      if (person.automaticStatus === "eligible") {
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.dataset.selectKey = person.key;
+        toggle.textContent = person.included ? "불포함" : "포함";
+        toggle.setAttribute("aria-label", participantLabel(person) + (person.included ? " 불포함으로 변경" : " 포함으로 변경"));
+        toggle.disabled = !editable;
+        head.append(toggle);
+      }
+      const profile = document.createElement("small");
+      const visibility = person.profileStatus === "public" ? "공개" : person.profileStatus === "private" ? "비공개" : person.profileStatus === "missing" ? "없음" : "미확인";
+      profile.textContent = "갤로그 " + visibility + " · 참여 댓글 " + person.commentCount + "개 · 댓글 #" + person.firstCommentId;
+      const reason = document.createElement("small");
+      reason.textContent = person.reason;
+      item.append(head, profile, reason);
+      fragment.append(item);
+    }
+    list.replaceChildren(fragment);
+    list.scrollTop = scrollTop;
+    $(group + "-empty").hidden = visible.length > 0;
+    $(group + "-empty").textContent = query ? "검색 결과가 없습니다." : group === "included" ? "포함된 참가자가 없습니다." : group === "excluded" ? "불포함 참가자가 없습니다." : "미확인 참가자가 없습니다.";
+  }
+}
+function changeSelection(key) {
+  if (!completed || controller || exportBusy || drawn) return;
+  const person = participants.find((candidate) => candidate.key === key);
+  if (person?.status !== "eligible") return;
+  if (manualExclusions.has(key)) manualExclusions.delete(key);
+  else manualExclusions.add(key);
+  appendLog(participantLabel(person) + (manualExclusions.has(key) ? " / 수동 불포함" : " / 수동 포함"));
+  render();
+  [...$("preview-panel").querySelectorAll("button[data-select-key]")].find((button) => button.dataset.selectKey === key)?.focus({ preventScroll: true });
+}
+function selectAll(include) {
+  if (!completed || controller || exportBusy || drawn) return;
+  for (const person of participants) if (person.status === "eligible") {
+    if (include) manualExclusions.delete(person.key);
+    else manualExclusions.add(person.key);
+  }
+  appendLog(include ? "활동 기준 통과자 전체 포함" : "활동 기준 통과자 전체 불포함");
+  render();
+}
+function renderRows(people) {
   const tbody = $("participant-table");
   tbody.replaceChildren();
-  for (const person of participants) {
+  for (const person of people) {
     const row = document.createElement("tr");
+    row.dataset.status = person.status;
     const nameCell = document.createElement("td");
     const nameLink = document.createElement("a");
     nameLink.href = commentLink(person);
     nameLink.target = "_blank";
     nameLink.rel = "noopener noreferrer";
     nameLink.className = "participant-name";
-    nameLink.textContent = person.name;
+    nameLink.textContent = participantLabel(person);
     nameCell.append(nameLink);
     const cells = [person.identityType === "uid" ? "계정" : person.identityType === "ip" ? "유동" : "미식별",
       person.profileStatus === "public" ? "공개" : person.profileStatus === "private" ? "비공개" : person.exclusion ? "—" : "미확인",
@@ -417,7 +528,7 @@ function renderRows() {
     const resultCell = document.createElement("td");
     const pill = document.createElement("span");
     pill.className = "result-pill " + person.status;
-    pill.textContent = person.status === "eligible" ? "통과" : person.status === "pending" ? "보류" : "제외";
+    pill.textContent = person.status === "eligible" ? "포함" : person.status === "pending" ? "미확인" : "불포함";
     const reason = document.createElement("small");
     reason.className = "result-reason";
     reason.textContent = person.reason;
@@ -439,7 +550,7 @@ function renderWinners() {
     place.className = "winner-rank";
     place.textContent = String(index + 1).padStart(2, "0");
     const link = document.createElement("a");
-    link.textContent = person.name;
+    link.textContent = participantLabel(person);
     link.href = commentLink(person);
     link.target = "_blank";
     link.rel = "noopener noreferrer";
@@ -454,9 +565,10 @@ function renderWinners() {
 }
 function render() {
   renderProgress();
-  const eligible = participants.filter((person) => person.status === "eligible").length;
-  const excluded = participants.filter((person) => person.status === "excluded").length;
-  const pending = participants.filter((person) => person.status === "pending").length;
+  const people = selectedParticipants();
+  const eligible = people.filter((person) => person.status === "eligible").length;
+  const excluded = people.filter((person) => person.status === "excluded").length;
+  const pending = people.filter((person) => person.status === "pending").length;
   $("metric-comments").textContent = number(comments.length);
   $("metric-participants").textContent = number(participants.length);
   $("metric-eligible").textContent = number(eligible);
@@ -468,12 +580,13 @@ function render() {
   $("report-title").textContent = post?.title || "";
   $("report-subtitle").textContent = post ? post.id + " / " + assessmentRange() : "";
   $("source-post").href = post?.url || "#";
-  $("participant-count").textContent = number(participants.length) + "명 · 제외 " + excluded + "명";
+  $("participant-count").textContent = number(participants.length) + "명 · 포함 " + eligible + "명 · 불포함 " + excluded + "명";
   $("coverage-label").textContent = periodLabel(settings) + " · " + criteriaLabel(settings) + " · 공개 갤로그 필수 / " + post.id + " 갤러리만 집계";
   $("export-csv").disabled = participants.length === 0;
   $("copy-result").disabled = !drawn;
   updateExportButtons();
-  renderRows();
+  renderPreview(people);
+  renderRows(people);
   renderWinners();
 }
 function exportCsv() {
@@ -485,8 +598,8 @@ function exportCsv() {
   };
   const rows = [["name", "comment_no", "entry_comment_count", "confirmed_posts", "confirmed_comments", "confirmed_total", "status", "reason", "winner", "comment_url",
     "assessment_start", "assessment_end", "period_value", "period_unit", "activity_mode", "min_posts", "min_comments", "min_total",
-    "profile_status", "gallery_id", "gallery_type", "posts_complete", "comments_complete", "date_precision"],
-    ...participants.map((person) => [person.name, person.firstCommentId, person.commentCount,
+    "profile_status", "gallery_id", "gallery_type", "posts_complete", "comments_complete", "date_precision", "identity_code", "included", "automatic_status", "manual_excluded"],
+    ...selectedParticipants().map((person) => [person.name, person.firstCommentId, person.commentCount,
       !person.exclusion && (settings.minPosts > 0 || settings.minTotal > 0) ? person.postCount : "",
       person.commentsChecked ? person.activityCommentCount : "",
       !person.exclusion && (settings.minPosts > 0 || settings.minComments > 0 || settings.minTotal > 0) ? person.totalActivityCount : "",
@@ -494,7 +607,7 @@ function exportCsv() {
       settings.periodUnit === "all" ? "" : new Date(cutoff).toISOString(), new Date(asOf).toISOString(), settings.periodUnit === "all" ? "" : settings.periodValue, settings.periodUnit, settings.activityMode, settings.minPosts, settings.minComments, settings.minTotal,
       person.profileStatus || "not-checked", post.id, post.type,
       !person.exclusion && (settings.minPosts > 0 || settings.minTotal > 0) ? person.postsComplete : "",
-      !person.exclusion && (settings.minComments > 0 || settings.minTotal > 0) ? person.commentsComplete : "", "day"])];
+      !person.exclusion && (settings.minComments > 0 || settings.minTotal > 0) ? person.commentsComplete : "", "day", person.identityCode || "", person.included, person.automaticStatus, person.manuallyExcluded])];
   const url = URL.createObjectURL(new Blob(["\uFEFF" + rows.map((row) => row.map(safe).join(",")).join("\r\n")], { type: "text/csv;charset=utf-8" }));
   const anchor = document.createElement("a");
   anchor.href = url;
@@ -504,16 +617,17 @@ function exportCsv() {
 }
 function updateExportButtons() {
   const busy = exportBusy || Boolean(controller);
+  const review = reviewState();
   $("start-button").disabled = busy;
-  $("redraw-button").disabled = busy || !completed || participants.some((p) => p.status === "pending")
-    || participants.filter((p) => p.status === "eligible").length < (settings?.winnerCount || 1);
+  $("redraw-button").disabled = busy || !drawn || !review.canDraw;
   $("export-png").disabled = busy || !drawn;
   $("export-json").disabled = busy || !asOf;
   $("export-zip").disabled = busy || !drawn;
+  updateReviewControls(review);
 }
 async function exportFiles(format) {
   if (exportBusy || controller || !asOf || (format !== "json" && !drawn)) return;
-  const record = createRecord({ post, settings, participants, commentsCount: comments.length, cutoff, asOf, completed,
+  const record = createRecord({ post, settings, participants: selectedParticipants(), commentsCount: comments.length, cutoff, asOf, completed,
     phase, tone: statusTone, message: $("status-text").textContent, draws, logs: progressHistory });
   const name = exportBaseName(record);
   exportBusy = true;
@@ -543,8 +657,8 @@ async function copyResult() {
   const message = ["[부기 추첨자]", post.title, post.url, periodLabel(settings) + " · " + criteriaLabel(settings),
     "평가기간: " + assessmentRange(),
     "공개 갤로그 필수 / " + post.id + " 갤러리의 글·댓글만 평가",
-    "참가 " + participants.length + "명 / 통과 " + participants.filter((p) => p.status === "eligible").length + "명",
-    "", "당첨자", ...drawn.winners.map((person, index) => (index + 1) + ". " + person.name + " (참여 댓글 " + person.firstCommentId + ")"),
+    "참가 " + participants.length + "명 / 포함 " + selectedParticipants().filter((p) => p.status === "eligible").length + "명",
+    "", "당첨자", ...drawn.winners.map((person, index) => (index + 1) + ". " + participantLabel(person) + " (참여 댓글 " + person.firstCommentId + ")"),
     "", "추첨 번호: " + drawn.id].join("\n");
   try { await navigator.clipboard.writeText(message); status("결과 복사 완료", "success"); }
   catch { status("복사 권한이 없습니다. 결과 CSV를 저장해주세요.", "error"); }
@@ -554,6 +668,14 @@ $("usage-button").addEventListener("click", () => $("usage-guide").showModal());
 $("usage-close").addEventListener("click", () => $("usage-guide").close());
 $("stop-button").addEventListener("click", () => controller?.abort());
 $("redraw-button").addEventListener("click", redraw);
+$("draw-button").addEventListener("click", confirmDraw);
+$("include-all").addEventListener("click", () => selectAll(true));
+$("exclude-all").addEventListener("click", () => selectAll(false));
+$("participant-search").addEventListener("input", () => renderPreview(selectedParticipants()));
+$("preview-panel").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-select-key]");
+  if (button) changeSelection(button.dataset.selectKey);
+});
 $("export-csv").addEventListener("click", exportCsv);
 $("export-png").addEventListener("click", () => exportFiles("png"));
 $("export-json").addEventListener("click", () => exportFiles("json"));
@@ -562,5 +684,6 @@ $("copy-result").addEventListener("click", copyResult);
 $("example-button").addEventListener("click", () => { $("post-url").value = "https://gall.dcinside.com/mgallery/board/view/?id=aidevelop&no=3524"; });
 for (const input of $("analysis-form").querySelectorAll('input[name="activity-mode"]')) input.addEventListener("change", syncActivityMode);
 $("period-unit").addEventListener("change", syncPeriodMode);
+for (const event of ["input", "change"]) $("analysis-form").addEventListener(event, () => { if (settings) render(); });
 setRunning(false);
 setInterval(() => { if (controller) updateElapsed(); }, 1000);

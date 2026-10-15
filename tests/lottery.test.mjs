@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { webcrypto } from "node:crypto";
-import { parsePostUrl, sixMonthCutoff, evaluationCutoff, periodLabel, collectParticipants, evaluateParticipants, pickWinners } from "../public/lottery-core.js";
+import { parsePostUrl, sixMonthCutoff, evaluationCutoff, periodLabel, participantLabel, applyParticipantSelection, collectParticipants, evaluateParticipants, pickWinners } from "../public/lottery-core.js";
 import { parseComments, nextPage } from "../api/comments.js";
 import { parsePosts } from "../api/pages.js";
 import activityHandler from "../api/comment-activity.js";
@@ -97,6 +97,44 @@ test("실제 댓글 형식에서 시스템·삭제 댓글 제외, UID 중복 통
   assert.equal(collectParticipants(comments, { ...options, keyword: "신청" }).length, 0);
 });
 
+test("동명 ㅇㅇ 계정은 공개 식별코드로 구분하고 유동의 IP는 노출하지 않음", () => {
+  const comments = parseComments({ comments: [
+    { no: "1", user_id: "alpha", name: "ㅇㅇ", memo: "참여" },
+    { no: "2", user_id: "beta", name: "ㅇㅇ", memo: "참여" },
+    { no: "3", user_id: "alpha", name: "새닉", memo: "참여" },
+    { no: "4", ip: "123.45", name: "ㅇㅇ", memo: "참여" },
+  ] }, gallery, sessionKey);
+  const people = collectParticipants(comments, options);
+  assert.equal(people.length, 3);
+  assert.equal(participantLabel(people[0]), "ㅇㅇ (alpha)");
+  assert.equal(participantLabel(people[1]), "ㅇㅇ (beta)");
+  assert.equal(people[0].commentCount, 2);
+  assert.equal(people[2].identityCode, "");
+  assert.ok(!JSON.stringify(comments).includes("123.45"));
+});
+
+test("수동 불포함은 통과자에게만 적용하고 비공개·미확인을 포함으로 바꾸지 않음", () => {
+  const people = [
+    { key: "a", status: "eligible", reason: "활동 기준 충족" },
+    { key: "b", status: "eligible", reason: "활동 기준 충족" },
+    { key: "c", status: "excluded", reason: "갤로그 비공개" },
+    { key: "d", status: "pending", reason: "확인 불가" },
+  ];
+  const selected = applyParticipantSelection(people, new Set(["a", "c", "d"]));
+  assert.equal(selected[0].included, false);
+  assert.equal(selected[0].automaticStatus, "eligible");
+  assert.equal(selected[0].reason, "운영자 수동 불포함");
+  assert.equal(selected[1].included, true);
+  assert.equal(selected[2].reason, "갤로그 비공개");
+  assert.equal(selected[2].manuallyExcluded, false);
+  assert.equal(selected[3].status, "pending");
+  assert.throws(() => pickWinners(selected, 1, webcrypto), /미확인/);
+  assert.equal(pickWinners(selected.slice(0, 3), 1, webcrypto)[0].key, "b");
+  assert.equal(applyParticipantSelection(people)[0].included, true);
+  assert.equal(applyParticipantSelection(people)[2].included, false);
+  assert.equal(people[0].status, "eligible");
+});
+
 test("댓글 UID와 활동 목록 UID는 닉네임이 달라도 같은 키로 연결, 공지 제외", () => {
   const comments = parseComments({ comments: [{ no: "1", user_id: "alpha", name: "오늘닉", memo: "참여" }] }, gallery, sessionKey);
   const row = (type, number) => '<tr class="ub-content us-post" data-type="' + type + '" data-no="' + number + '">'
@@ -137,10 +175,10 @@ test("댓글 페이지 이동은 DC viewComments와 마지막 페이지를 구�
   assert.equal(nextPage('<a onclick="viewComments(1,\'N\')">1</a><em>2</em>', 2), null);
 });
 
-test("JSON 기록은 재추첨 내역과 판정을 보존하고 원 식별자·본문·세션 키는 내보내지 않음", () => {
+test("JSON 기록은 공개 식별코드와 재추첨 내역을 보존하고 IP·본문·세션 키는 내보내지 않음", () => {
   const at = Date.parse("2026-10-15T12:00:00+09:00");
   const person = { key: "internal-author-key", uid: "private-user-id", ip: "private-ip", content: "private-comment-body",
-    name: "참가자", identityType: "uid", firstCommentId: "123", commentCount: 2, profileStatus: "public",
+    name: "참가자", identityCode: "public_alpha", identityType: "uid", firstCommentId: "123", commentCount: 2, profileStatus: "public",
     status: "eligible", reason: "활동 기준 충족", postCount: 3, activityCommentCount: 0, totalActivityCount: 3, lastActivity: at, exclusion: "" };
   const record = createRecord({ post: { id: "aidevelop", type: "mgallery", no: "3524", title: "나눔", url: "https://gall.dcinside.com/mgallery/board/view/?id=aidevelop&no=3524", authorKey: "private-post-key" },
     settings: { winnerCount: 1, periodUnit: "all", periodValue: 0, activityMode: "separate", minPosts: 3, minComments: 0, minTotal: 0, requirePublicGallog: true, includeReplies: true, excludeAuthor: true, keyword: "", sessionKey: "private-session-key" },
@@ -149,6 +187,7 @@ test("JSON 기록은 재추첨 내역과 판정을 보존하고 원 식별자·�
     draws: [{ id: "first", at, winners: [person] }, { id: "second", at: at + 1000, winners: [person] }],
     logs: [{ elapsed: "00:01", tone: "success", message: "추첨 완료", detail: "" }] }, at + 2000);
   assert.equal(record.latestDrawId, "second");
+  assert.equal(record.participants[0].displayName, "참가자 (public_alpha)");
   assert.deepEqual(record.draws.map((draw) => draw.sequence), [1, 2]);
   assert.equal(record.assessment.from, null);
   assert.equal(record.participants[1].confirmedPosts, null);

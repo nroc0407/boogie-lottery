@@ -46,13 +46,13 @@
             <small id="activity-help">글·댓글 모두 충족 / 0 = 해당 기준 끄기</small>
           </div>
           <p class="scope-note">공개 갤로그 필수 · 추첨글과 같은 갤러리만 평가</p>
-          <div class="run-actions"><button id="start-button" class="primary-button" type="submit"><span id="start-label">추첨 시작</span></button><button id="stop-button" type="button" hidden>중단</button></div>
+          <div class="run-actions"><button id="start-button" class="primary-button" type="submit"><span id="start-label">참가자 확인</span></button><button id="stop-button" type="button" hidden>중단</button></div>
         </fieldset>
       </form>
 
       <fieldset class="progress-panel">
         <legend>진행 상황 <span id="elapsed-time">00:00</span></legend>
-        <div class="flow-steps" aria-label="진행 단계"><span data-step="comments">1 댓글 수집</span><span data-step="activity">2 활동 확인</span><span data-step="draw">3 추첨</span></div>
+        <div class="flow-steps" aria-label="진행 단계"><span data-step="comments">1 댓글 수집</span><span data-step="activity">2 활동 확인</span><span data-step="review">3 명단 확인</span><span data-step="draw">4 추첨</span></div>
         <div id="status-banner" class="status-banner" role="status" aria-live="polite"><span id="status-indicator" aria-hidden="true">[·]</span><span id="status-text">대기 중</span><span id="status-pages"></span></div>
         <div class="console-output">
           <ol id="progress-log" aria-label="처리 내역"></ol>
@@ -66,9 +66,23 @@
 
       <section id="results" hidden>
         <div class="results-heading"><div><h2 id="report-title"></h2><p id="report-subtitle"></p><p id="coverage-label"></p></div><a id="source-post" target="_blank" rel="noopener noreferrer">원문</a></div>
+        <fieldset id="preview-panel" class="preview-panel" hidden>
+          <legend>참가자 미리보기</legend>
+          <div class="preview-tools">
+            <label class="preview-search" for="participant-search">닉네임·식별코드 검색<input id="participant-search" type="search" placeholder="ㅇㅇ 또는 식별코드" autocomplete="off"></label>
+            <div class="preview-bulk"><button id="include-all" type="button" disabled>통과자 전체 포함</button><button id="exclude-all" type="button" disabled>통과자 전체 불포함</button></div>
+          </div>
+          <div class="preview-groups">
+            <section class="preview-group included-group" aria-labelledby="included-title"><h3 id="included-title">포함 <span id="included-count">0명</span></h3><ul id="included-list" class="preview-list"></ul><p id="included-empty" class="preview-empty">포함된 참가자가 없습니다.</p></section>
+            <section class="preview-group excluded-group" aria-labelledby="excluded-title"><h3 id="excluded-title">불포함 <span id="excluded-count">0명</span></h3><ul id="excluded-list" class="preview-list"></ul><p id="excluded-empty" class="preview-empty">불포함 참가자가 없습니다.</p></section>
+            <section id="pending-group" class="preview-group pending-group" aria-labelledby="pending-title" hidden><h3 id="pending-title">미확인 <span id="pending-count">0명</span></h3><ul id="pending-list" class="preview-list"></ul><p id="pending-empty" class="preview-empty">검색 결과가 없습니다.</p></section>
+          </div>
+          <p class="preview-rule">닉네임 뒤 괄호는 계정의 공개 식별코드입니다. 비공개·기준 미달 참가자는 포함할 수 없습니다. 추첨 후에는 명단이 고정됩니다.</p>
+          <div class="preview-confirm"><p id="review-message" role="status" aria-live="polite">참가자를 확인하고 있습니다.</p><button id="draw-button" class="primary-button" type="button" disabled>포함 대상 추첨하기</button></div>
+        </fieldset>
         <fieldset id="winner-section" class="winner-section" hidden aria-live="polite"><legend>당첨자</legend><div id="winner-list" class="winner-list"></div><p id="draw-detail"></p></fieldset>
         <details class="participants-panel">
-          <summary>참가자 <span id="participant-count"></span></summary>
+          <summary>참가자 상세 내역 <span id="participant-count"></span></summary>
           <div class="table-wrap"><table><thead><tr><th>참가자</th><th>유형</th><th>갤로그</th><th>참여 댓글</th><th>글</th><th>댓글</th><th>확인 합계</th><th>최근 활동</th><th>판정</th></tr></thead><tbody id="participant-table"></tbody></table></div>
           <p id="participants-empty">수집 중</p>
         </details>
@@ -88,7 +102,7 @@
         <li><h3>나눔 게시글 주소 입력</h3><p>일반·마이너·미니 갤러리의 추첨글 주소를 붙여 넣습니다. 같은 계정의 중복 댓글은 참가자 1명으로 묶고, 갤로그가 없는 유동은 제외합니다.</p></li>
         <li><h3>당첨 인원과 활동 기준 설정</h3><p>기본값은 <strong>기간 제한 없음</strong>으로, 공개된 전체 기간의 활동을 평가합니다. 기간을 정하려면 ‘개월’을 선택하고 최근 1~24개월을 입력합니다.</p><ul><li><strong>최소 글·댓글:</strong> 글과 댓글의 개별 기준을 모두 충족해야 합니다.</li><li><strong>글댓합:</strong> 글 수와 댓글 수의 합계만 판정합니다.</li></ul><p>0개로 둔 건수 기준은 적용하지 않지만, 갤로그 공개 여부는 계속 확인합니다. 추첨글 자체와 그 글의 참여 댓글은 활동 건수에서 뺍니다.</p></li>
         <li><h3>필요한 참여 조건 선택</h3><p>‘추가 설정’에서 참여 키워드, 대댓글 포함, 글쓴이 제외 여부를 정합니다. 기본값은 전체 댓글 대상, 대댓글 포함, 글쓴이 제외입니다.</p></li>
-        <li><h3>추첨 시작 후 결과 확인</h3><p>댓글 수집 → 활동 확인 → 추첨 순서로 진행합니다. 통과한 참가자는 모두 같은 확률로 뽑으며 당첨자는 중복되지 않습니다. 참가자 목록에서 판정 사유를 확인하고, 결과 복사·CSV 저장을 사용할 수 있습니다. ‘다시 추첨’은 같은 후보 중 새로 뽑습니다.</p><p>‘PNG 저장’은 당첨자·조건·추첨 번호가 담긴 결과 이미지, ‘JSON 저장’은 설정·참가자 판정·이번 실행의 재추첨 내역·최근 120개 처리 로그가 담긴 기록 파일을 받습니다. ‘ZIP 저장’은 같은 결과의 PNG와 JSON을 하나로 묶습니다. PNG·ZIP은 당첨자가 나온 뒤, JSON은 중단·보류 후에도 저장할 수 있습니다. 파일은 기기에 내려받으며 서버에는 보관하지 않습니다.</p></li>
+        <li><h3>명단을 확인한 뒤 추첨</h3><p>‘참가자 확인’을 누르면 댓글 수집 → 활동 확인 → 명단 확인 순서로 진행하며, 자동으로 추첨하지 않습니다. 닉네임 뒤 괄호에 공개 식별코드를 표시합니다. 초록색 ‘포함’, 빨간색 ‘불포함’, 노란색 ‘미확인’ 명단과 판정 사유를 먼저 확인합니다.</p><p>활동 기준을 통과한 사람은 포함·불포함을 조정할 수 있습니다. 비공개·기준 미달·미확인 참가자는 포함할 수 없습니다. 위 설정에서 당첨 인원을 정하고 ‘포함 대상 추첨하기’를 눌러야 추첨합니다. 다른 조건을 바꾸면 참가자를 다시 확인해야 합니다. 추첨 후에는 명단이 고정되며, ‘다시 추첨’은 같은 후보 중 새로 뽑습니다.</p><p>‘PNG 저장’은 당첨자·식별코드·조건·추첨 번호가 담긴 결과 이미지, ‘JSON 저장’은 설정·공개 식별코드·포함 여부·참가자 판정·이번 실행의 재추첨 내역·최근 120개 처리 로그가 담긴 기록 파일을 받습니다. ‘ZIP 저장’은 같은 결과의 PNG와 JSON을 하나로 묶습니다. PNG·ZIP은 당첨자가 나온 뒤, JSON은 명단 확인·중단·보류 후에도 저장할 수 있습니다. 파일은 기기에 내려받으며 서버에는 보관하지 않습니다.</p></li>
       </ol>
       <p class="usage-caution">접속 오류 등으로 확인되지 않은 참가자가 남거나 당첨 인원이 후보 수보다 많으면 추첨을 보류합니다. 활동 내역을 많이 확인해야 할수록 시간이 더 걸릴 수 있습니다.</p>
     </div>
