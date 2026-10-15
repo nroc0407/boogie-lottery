@@ -4,7 +4,7 @@ import { webcrypto } from "node:crypto";
 import { parsePostInput, parsePostUrl, sixMonthCutoff, evaluationCutoff, periodLabel, participantLabel, applyParticipantSelection, collectParticipants, evaluateParticipants, pickWinners } from "../public/lottery-core.js";
 import commentsHandler, { parseComments, nextPage, loadCommentSource } from "../api/comments.js";
 import { parsePosts } from "../api/pages.js";
-import activityHandler from "../api/comment-activity.js";
+import activityHandler, { parseProfileActivity } from "../api/comment-activity.js";
 import { createRecord } from "../public/result-export.js";
 
 const gallery = { id: "aidevelop", type: "mgallery" };
@@ -108,9 +108,13 @@ test("활동 API는 기간 제한 없음에서 2년 이전 기록도 집계하�
     + '<a class="link" href="https://gall.dcinside.com/mgallery/board/view/?id=aidevelop&amp;no=42">활동</a>'
     + '<span class="date">2020.01.02</span></li></ul><div class="bottom_paging_box">1</div>';
   let privateProfile = false;
+  let partialProfile = false;
+  let unknownProfile = false;
   t.mock.method(globalThis, "fetch", async (url) => {
     if (String(url).startsWith("https://gallog.dcinside.com/")) {
-      return new Response(privateProfile ? '<span class="greybox">비공개</span>' : oldProfile);
+      if (privateProfile && String(url).endsWith("/comment")) return new Response('<span class="greybox">비공개</span>');
+      if (unknownProfile) return new Response('<p>응답 형식 변경</p>');
+      return new Response(partialProfile ? oldProfile.replace('class="bluebox">공개', 'class="whitebox">일부공개') : oldProfile);
     }
     if (String(url).includes("/board/comment/")) return Response.json(raw);
     return new Response('<span class="title_subject">나눔</span><input name="e_s_n_o" value="token">');
@@ -133,11 +137,48 @@ test("활동 API는 기간 제한 없음에서 2년 이전 기록도 집계하�
   for (const changes of [{ periodUnit: "months" }, { periodUnit: "days" }, { cutoff: 1 }]) {
     assert.equal((await request(changes)).status, 400);
   }
+  partialProfile = true;
+  const partial = await request({ action: "access" });
+  assert.equal(partial.status, 200);
+  assert.equal(partial.body.profileStatus, "partial");
+  assert.equal(partial.body.pages.length, 2);
+  assert.ok(partial.body.pages.every((page) => page.visibility === "partial"));
   privateProfile = true;
-  const hidden = await request();
+  const hidden = await request({ action: "access" });
   assert.equal(hidden.status, 200);
   assert.equal(hidden.body.profileStatus, "private");
   assert.deepEqual(hidden.body.pages, []);
+  privateProfile = false;
+  unknownProfile = true;
+  const unknown = await request({ action: "access" });
+  assert.equal(unknown.body.profileStatus, "unknown");
+  assert.deepEqual(unknown.body.pages, []);
+});
+
+test("일부공개는 공개된 대상 갤러리 기록만 평가하고 기록이 없으면 기준 미달 처리", () => {
+  const target = parsePostUrl("https://gall.dcinside.com/mgallery/board/view/?id=target&no=99");
+  const row = (id, gallery, no) => `<li data-no="${id}"><a class="link" href="https://gall.dcinside.com/mgallery/board/view/?id=${gallery}&no=${no}">글</a><span class="date">2026.10.01</span></li>`;
+  const html = '<span class="whitebox">일부공개</span><ul class="cont_listbox">'
+    + row(1, "target", 1) + row(2, "other", 2) + row(3, "target", 99) + '</ul><div class="bottom_paging_box">1</div>';
+  const parsed = parseProfileActivity(html, target, "post", 1, 0, Date.parse("2026-10-15T00:00:00+09:00"));
+  assert.equal(parsed.visibility, "partial");
+  assert.deepEqual(parsed.entries.map((entry) => entry.postNo), ["1"]);
+  assert.equal(parsed.malformed, false);
+  assert.equal(parsed.paginationKnown, true);
+  assert.equal(parsed.nextPage, null);
+  const person = { key: "p", name: "ㅇㅇ", exclusion: "", status: "pending" };
+  const rules = { requirePublicGallog: true, minPosts: 1, minComments: 0, periodUnit: "all" };
+  const counts = new Map([["p", { profileStatus: "partial", count: parsed.entries.length, comments: 0,
+    postsComplete: true, commentsComplete: true }]]);
+  assert.equal(evaluateParticipants([person], counts, rules, true)[0].status, "eligible");
+  const absent = parseProfileActivity(html, { ...target, id: "hidden" }, "post", 1, 0, Date.now());
+  assert.equal(absent.entries.length, 0);
+  counts.get("p").count = absent.entries.length;
+  const excluded = evaluateParticipants([person], counts, rules, true)[0];
+  assert.equal(excluded.status, "excluded");
+  assert.match(excluded.reason, /작성글 없음/);
+  const unknown = parseProfileActivity('<ul class="cont_listbox"><li><span class="whitebox">일부공개</span></li></ul>', target, "post", 1, 0, Date.now());
+  assert.equal(unknown.visibility, "unknown", "An activity entry must not impersonate the section's visibility label");
 });
 
 test("실제 댓글 형식에서 시스템·삭제 댓글 제외, UID 중복 통합, 동명 계정은 분리", () => {

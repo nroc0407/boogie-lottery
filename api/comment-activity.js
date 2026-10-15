@@ -19,11 +19,11 @@ export function parseProfileActivity(html, gallery, kind, page, cutoff, asOf) {
   const listMatch = html.match(/<ul\b[^>]*class=["'][^"']*\bcont_listbox\b[^"']*["'][^>]*>([\s\S]*?)<\/ul>/i);
   // Read the section's visibility label before its list, never words inside activity entries.
   const header = listMatch ? html.slice(0, listMatch.index) : html;
-  const labels = [...header.matchAll(/<span\b[^>]*class=["'][^"']*\b(?:bluebox|greybox|graybox|redbox)\b[^"']*["'][^>]*>\s*(공개|비공개)\s*<\/span>/gi)].map((match) => match[1]);
+  const labels = [...header.matchAll(/<span\b[^>]*class=["'][^"']*\b(?:bluebox|greybox|graybox|redbox|whitebox)\b[^"']*["'][^>]*>\s*(공개|비공개|일부공개)\s*<\/span>/gi)].map((match) => match[1]);
   const base = { kind, page, entries: [], nextPage: null, malformed: false, paginationKnown: false, boundary: false };
   if (labels.includes("비공개")) return { ...base, visibility: "private", unavailableReason: `갤로그 비공개 (${LABELS[kind]} 목록)` };
-  if (!labels.includes("공개")) return { ...base, visibility: "unknown", unavailableReason: "갤로그 공개 여부를 확인할 수 없어 보류합니다." };
-  const result = { ...base, visibility: "public" };
+  if (!labels.some((label) => ["공개", "일부공개"].includes(label))) return { ...base, visibility: "unknown", unavailableReason: "갤로그 공개 여부를 확인할 수 없어 보류합니다." };
+  const result = { ...base, visibility: labels.includes("일부공개") ? "partial" : "public" };
   const emptyMessage = kind === "post" ? /게시글이 없습니다|등록된 게시글이 없습니다|작성한 게시글이 없습니다/ : /댓글이 없습니다|댓글 내역이 없습니다|등록된 댓글이 없습니다|작성한 댓글이 없습니다/;
   if (!listMatch && emptyMessage.test(text(html, html.length))) return { ...result, paginationKnown: true, fingerprint: "empty" };
   if (!listMatch) return { ...result, unavailableReason: "공개 갤로그 목록 형식이 달라 활동 확인을 보류합니다." };
@@ -118,7 +118,7 @@ export default async function handler(req, res) {
       if (!accessOnly && (result.unavailableReason || result.boundary || !result.nextPage)) break;
       if (index + 1 < requests.length) await delay(300);
     }
-    respond(res, 200, { profileStatus: "public", pages });
+    respond(res, 200, { profileStatus: pages.some((page) => page.visibility === "partial") ? "partial" : "public", pages });
   } catch (error) {
     // Never infer a private profile from an HTTP error or reveal a raw UID in an error.
     respond(res, pages.length && !accessOnly ? 200 : 502, { profileStatus: "unknown", pages: accessOnly ? [] : pages,

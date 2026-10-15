@@ -82,6 +82,8 @@ export function participantLabel(person) {
   return person.name + (person.identityCode ? " (" + person.identityCode + ")" : "");
 }
 
+export function isReadableProfile(status) { return status === "public" || status === "partial"; }
+
 export function applyParticipantSelection(participants, manualExclusions = new Set()) {
   return participants.map((person) => {
     const manuallyExcluded = person.status === "eligible" && manualExclusions.has(person.key);
@@ -125,7 +127,7 @@ export function evaluateParticipants(participants, counts, minimum, complete) {
       const reason = activity.profileError || (activity.profileStatus === "private" ? "갤로그 비공개" : "연결할 갤로그 없음");
       return { ...person, profileStatus: activity.profileStatus, exclusion: reason, status: "excluded", reason };
     }
-    if (rules.requirePublicGallog && activity.profileStatus !== "public") {
+    if (rules.requirePublicGallog && !isReadableProfile(activity.profileStatus)) {
       return { ...person, profileStatus: activity.profileStatus || "unknown", status: "pending", reason: activity.profileError || "갤로그 공개 여부 확인 중" };
     }
     const postsComplete = activity.postsComplete ?? complete;

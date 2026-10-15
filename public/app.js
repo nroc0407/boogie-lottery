@@ -1,4 +1,4 @@
-import { parsePostInput, parsePostUrl, evaluationCutoff, periodLabel, criteriaLabel, participantLabel, applyParticipantSelection, collectParticipants, evaluateParticipants, pickWinners } from "/lottery-core.js";
+import { parsePostInput, parsePostUrl, evaluationCutoff, periodLabel, criteriaLabel, participantLabel, isReadableProfile, applyParticipantSelection, collectParticipants, evaluateParticipants, pickWinners } from "/lottery-core.js";
 import { createRecord, jsonBlob, pngBlob, zipBlob, exportBaseName, downloadBlob } from "/result-export.js";
 
 const $ = (id) => document.getElementById(id);
@@ -314,11 +314,11 @@ async function scanProfileActivity(sessionKey, signal, checkable) {
     try {
       status(participantLabel(person) + " / 갤로그 공개 확인", "loading", (index + 1) + "/" + checkable.length + "명");
       const access = await api("/api/comment-activity", { ...body, action: "access" }, signal);
-      if (access.profileStatus === "public" && (!Array.isArray(access.pages) || access.pages.length !== 2
+      if (isReadableProfile(access.profileStatus) && (!Array.isArray(access.pages) || access.pages.length !== 2
         || access.pages[0].kind !== "post" || access.pages[1].kind !== "comment"
-        || access.pages.some((page) => page.visibility !== "public"))) throw new Error("갤로그 글·댓글 공개 여부를 확인할 수 없습니다.");
+        || access.pages.some((page) => !isReadableProfile(page.visibility)))) throw new Error("갤로그 글·댓글 공개 여부를 확인할 수 없습니다.");
       activity.profileStatus = access.profileStatus;
-      if (access.profileStatus !== "public") {
+      if (!isReadableProfile(access.profileStatus)) {
         activity.profileError = access.unavailableReason || access.error || "갤로그 공개 여부를 확인할 수 없어 보류합니다.";
       } else {
         consume(access.pages);
@@ -351,6 +351,7 @@ async function scanProfileActivity(sessionKey, signal, checkable) {
             syncCoverage();
             continue;
           }
+          if (data.profileStatus === "partial") activity.profileStatus = "partial";
           consume(data.pages);
           if (data.error || data.profileStatus === "unknown") {
             state.error = data.error || data.unavailableReason || "갤로그 접근 오류로 확인을 보류합니다.";
@@ -362,7 +363,7 @@ async function scanProfileActivity(sessionKey, signal, checkable) {
       }
     } catch (error) {
       if (error.name === "AbortError" || error.status === 429) throw error;
-      if (activity.profileStatus !== "public") {
+      if (!isReadableProfile(activity.profileStatus)) {
         activity.profileStatus = "unknown";
         activity.profileError = error.message;
       } else {
@@ -471,7 +472,7 @@ function renderPreview(people) {
         head.append(toggle);
       }
       const profile = document.createElement("small");
-      const visibility = person.profileStatus === "public" ? "공개" : person.profileStatus === "private" ? "비공개" : person.profileStatus === "missing" ? "없음" : "미확인";
+      const visibility = person.profileStatus === "public" ? "공개" : person.profileStatus === "partial" ? "일부공개" : person.profileStatus === "private" ? "비공개" : person.profileStatus === "missing" ? "없음" : "미확인";
       profile.textContent = "갤로그 " + visibility + " · 참여 댓글 " + person.commentCount + "개 · 댓글 #" + person.firstCommentId;
       const reason = document.createElement("small");
       reason.textContent = person.reason;
@@ -518,7 +519,7 @@ function renderRows(people) {
     nameLink.textContent = participantLabel(person);
     nameCell.append(nameLink);
     const cells = [person.identityType === "uid" ? "계정" : person.identityType === "ip" ? "유동" : "미식별",
-      person.profileStatus === "public" ? "공개" : person.profileStatus === "private" ? "비공개" : person.exclusion ? "—" : "미확인",
+      person.profileStatus === "public" ? "공개" : person.profileStatus === "partial" ? "일부공개" : person.profileStatus === "private" ? "비공개" : person.exclusion ? "—" : "미확인",
       person.commentCount + "개", !person.exclusion && (settings.minPosts > 0 || settings.minTotal > 0) ? number(person.postCount) : "—",
       person.commentsChecked ? number(person.activityCommentCount) : "—",
       !person.exclusion && (settings.minPosts > 0 || settings.minComments > 0 || settings.minTotal > 0) ? number(person.totalActivityCount) : "—",
