@@ -14,7 +14,7 @@
     <div class="terminal-body">
       <form id="analysis-form">
         <fieldset class="settings-panel">
-          <legend>추첨 설정</legend>
+          <legend class="settings-legend"><span>추첨 설정</span><button id="usage-button" class="usage-button" type="button" aria-haspopup="dialog" aria-controls="usage-guide">사용법</button></legend>
           <label class="field-label" for="post-url">게시글 주소</label>
           <div class="url-row">
             <input id="post-url" type="url" placeholder="https://gall.dcinside.com/…" required maxlength="2048" autocomplete="off" spellcheck="false">
@@ -76,6 +76,22 @@
       </section>
     </div>
   </main>
+  <dialog id="usage-guide" class="usage-guide" aria-labelledby="usage-title">
+    <div class="usage-heading"><h2 id="usage-title">사용법</h2><button id="usage-close" class="usage-close" type="button" autofocus>닫기</button></div>
+    <div class="usage-content">
+      <section class="usage-requirement" aria-labelledby="usage-requirement-title">
+        <h3 id="usage-requirement-title">참가자는 활동 내역을 공개해 주세요</h3>
+        <p>갤로그의 글·댓글 목록 중 하나라도 비공개면 추첨 후보에서 제외합니다. <strong>추첨글이 올라온 갤러리의 활동 내역도 공개해야 합니다.</strong> 해당 내역을 숨기면 실제 활동이 있어도 0건·기준 미달로 제외될 수 있습니다. 다른 갤러리의 활동은 평가하지 않습니다.</p>
+      </section>
+      <ol class="usage-steps">
+        <li><h3>나눔 게시글 주소 입력</h3><p>일반·마이너·미니 갤러리의 추첨글 주소를 붙여 넣습니다. 같은 계정의 중복 댓글은 참가자 1명으로 묶고, 갤로그가 없는 유동은 제외합니다.</p></li>
+        <li><h3>당첨 인원과 활동 기준 설정</h3><p>평가기간은 최근 1~24개월 또는 1~730일로 설정합니다.</p><ul><li><strong>최소 글·댓글:</strong> 글과 댓글의 개별 기준을 모두 충족해야 합니다.</li><li><strong>글댓합:</strong> 글 수와 댓글 수의 합계만 판정합니다.</li></ul><p>0개로 둔 건수 기준은 적용하지 않지만, 갤로그 공개 여부는 계속 확인합니다. 추첨글 자체와 그 글의 참여 댓글은 활동 건수에서 뺍니다.</p></li>
+        <li><h3>필요한 참여 조건 선택</h3><p>‘추가 설정’에서 참여 키워드, 대댓글 포함, 글쓴이 제외 여부를 정합니다. 기본값은 전체 댓글 대상, 대댓글 포함, 글쓴이 제외입니다.</p></li>
+        <li><h3>추첨 시작 후 결과 확인</h3><p>댓글 수집 → 활동 확인 → 추첨 순서로 진행합니다. 통과한 참가자는 모두 같은 확률로 뽑으며 당첨자는 중복되지 않습니다. 참가자 목록에서 판정 사유를 확인하고, 결과 복사·CSV 저장을 사용할 수 있습니다. ‘다시 추첨’은 같은 후보 중 새로 뽑습니다.</p></li>
+      </ol>
+      <p class="usage-caution">접속 오류 등으로 확인되지 않은 참가자가 남거나 당첨 인원이 후보 수보다 많으면 추첨을 보류합니다. 활동 내역을 많이 확인해야 할수록 시간이 더 걸릴 수 있습니다.</p>
+    </div>
+  </dialog>
   <script type="module" src="/app.js"></script>
 </body>
 </html>

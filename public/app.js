@@ -494,6 +494,8 @@ async function copyResult() {
   catch { status("복사 권한이 없습니다. 결과 CSV를 저장해주세요.", "error"); }
 }
 $("analysis-form").addEventListener("submit", run);
+$("usage-button").addEventListener("click", () => $("usage-guide").showModal());
+$("usage-close").addEventListener("click", () => $("usage-guide").close());
 $("stop-button").addEventListener("click", () => controller?.abort());
 $("redraw-button").addEventListener("click", redraw);
 $("export-csv").addEventListener("click", exportCsv);
