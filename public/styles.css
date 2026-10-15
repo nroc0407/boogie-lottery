@@ -149,17 +149,30 @@ tbody tr:last-child td { border-bottom: 0; }
 .preview-search input { width: 100%; min-width: 0; min-height: 38px; padding: 6px 9px; border: 1px solid var(--line); background: var(--console); color: var(--ink); }
 .preview-bulk { display: flex; flex-wrap: wrap; gap: 8px; }
 .preview-bulk button { padding: 5px 10px; font-size: 11px; }
-.preview-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.preview-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 14px; }
 .preview-group { min-width: 0; padding: 12px; border: 1px solid var(--line); background: var(--console); }
-.preview-group h3 { display: flex; justify-content: space-between; gap: 10px; margin: 0 0 10px; font-size: 13px; }
+.preview-group > summary, .exclusion-reason > summary { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 24px; list-style: none; }
+.preview-group > summary::-webkit-details-marker, .exclusion-reason > summary::-webkit-details-marker { display: none; }
+.preview-group > summary::before, .exclusion-reason > summary::before { content: "▸"; flex: 0 0 auto; }
+.preview-group[open] > summary::before, .exclusion-reason[open] > summary::before { content: "▾"; }
+.preview-group > summary:focus-visible, .exclusion-reason > summary:focus-visible { outline: 2px solid currentColor; outline-offset: 4px; }
+.preview-group[open] > summary { margin-bottom: 10px; }
+.preview-group h3 { display: flex; flex: 1; justify-content: space-between; gap: 10px; margin: 0; font-size: 13px; }
 .preview-group h3 span { font-weight: 400; }
 .included-group { border-color: #376648; }
-.included-group h3, .included-group .participant-name { color: var(--green); }
+.included-group > summary, .included-group .participant-name { color: var(--green); }
 .excluded-group { border-color: #733f45; }
-.excluded-group h3, .excluded-group .participant-name { color: var(--red); }
+.excluded-group > summary, .excluded-group .participant-name { color: var(--red); }
 .pending-group { grid-column: 1 / -1; border-color: #78612f; }
-.pending-group h3, .pending-group .participant-name { color: #e7c777; }
+.pending-group > summary, .pending-group .participant-name { color: #e7c777; }
 .preview-list { display: grid; gap: 9px; max-height: 380px; margin: 0; padding: 0; overflow: auto; list-style: none; scrollbar-color: #3d7250 var(--console); }
+.exclusion-help { margin: 0 0 10px; color: var(--muted); font-size: 11px; }
+.exclusion-reason { min-width: 0; padding: 8px 10px; border: 1px solid #513439; }
+.exclusion-reason > summary { color: var(--red); font-size: 12px; }
+.exclusion-reason-label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.exclusion-reason-count { flex: 0 0 auto; font-size: 11px; }
+.exclusion-reason-list { display: grid; gap: 8px; margin: 10px 0 0; padding: 0; list-style: none; }
+.excluded-group .preview-person .preview-person-reason { color: #e0b4b4; }
 .preview-person { min-width: 0; padding: 10px; border: 1px solid var(--line); }
 .preview-person-head { display: flex; align-items: start; justify-content: space-between; gap: 10px; }
 .preview-person .participant-name { min-width: 0; font-weight: 700; font-size: 13px; }

@@ -18,6 +18,8 @@ let draws = [];
 let progressHistory = [];
 let exportBusy = false;
 const manualExclusions = new Set();
+const exclusionGroupsOpen = new Map();
+let previousPreviewQuery = "";
 let settings = null;
 let asOf = 0;
 let cutoff = 0;
@@ -438,11 +440,54 @@ function updateReviewControls(review) {
   else message = "포함 " + number(review.included) + "명 중 " + number(review.winnerCount) + "명을 뽑습니다. 명단을 확인한 뒤 추첨 버튼을 눌러주세요.";
   $("review-message").textContent = message;
 }
+function exclusionGroup(person) {
+  if (person.manuallyExcluded) return ["manual", "운영자 수동 불포함"];
+  if (person.profileStatus === "private") return ["private", "갤로그 비공개"];
+  if (person.exclusion === "게시글 작성자") return ["author", "게시글 작성자"];
+  if (person.profileStatus === "missing" || person.exclusion === "연결할 갤로그가 없는 참가자") return ["missing", "연결할 갤로그 없음"];
+  if (person.exclusion === "작성자 식별 불가") return ["unidentified", "작성자 식별 불가"];
+  if (person.exclusion === "유동 제외 설정") return ["guest", "유동 제외 설정"];
+  return ["activity", "활동 기준 미달"];
+}
+function previewPerson(person, editable) {
+  const item = document.createElement("li");
+  item.className = "preview-person";
+  item.dataset.status = person.status;
+  const head = document.createElement("div");
+  head.className = "preview-person-head";
+  const link = document.createElement("a");
+  link.className = "participant-name";
+  link.href = commentLink(person); link.target = "_blank"; link.rel = "noopener noreferrer";
+  link.textContent = participantLabel(person);
+  head.append(link);
+  if (person.automaticStatus === "eligible") {
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.dataset.selectKey = person.key;
+    toggle.textContent = person.included ? "불포함" : "포함";
+    toggle.setAttribute("aria-label", participantLabel(person) + (person.included ? " 불포함으로 변경" : " 포함으로 변경"));
+    toggle.disabled = !editable;
+    head.append(toggle);
+  }
+  const profile = document.createElement("small");
+  const visibility = person.profileStatus === "public" ? "공개" : person.profileStatus === "partial" ? "일부공개" : person.profileStatus === "private" ? "비공개" : person.profileStatus === "missing" ? "없음" : "미확인";
+  profile.textContent = "갤로그 " + visibility + " · 참여 댓글 " + person.commentCount + "개 · 댓글 #" + person.firstCommentId;
+  const reason = document.createElement("small");
+  reason.className = "preview-person-reason";
+  reason.textContent = (person.status === "excluded" ? "사유: " : "") + person.reason;
+  item.append(head, profile, reason);
+  return item;
+}
 function renderPreview(people) {
   $("preview-panel").hidden = !people.length;
   if (!people.length) return;
   const query = $("participant-search").value.trim().toLocaleLowerCase("ko-KR");
   const editable = completed && !controller && !drawn && !exportBusy;
+  if (!previousPreviewQuery) {
+    for (const group of $("excluded-list").querySelectorAll("details[data-exclusion-reason]")) {
+      exclusionGroupsOpen.set(group.dataset.exclusionReason, group.open);
+    }
+  }
   for (const [group, state] of [["included", "eligible"], ["excluded", "excluded"], ["pending", "pending"]]) {
     const members = people.filter((person) => person.status === state);
     const visible = members.filter((person) => !query || participantLabel(person).toLocaleLowerCase("ko-KR").includes(query));
@@ -451,39 +496,46 @@ function renderPreview(people) {
     const list = $(group + "-list");
     const scrollTop = list.scrollTop;
     const fragment = document.createDocumentFragment();
-    for (const person of visible) {
-      const item = document.createElement("li");
-      item.className = "preview-person";
-      item.dataset.status = person.status;
-      const head = document.createElement("div");
-      head.className = "preview-person-head";
-      const link = document.createElement("a");
-      link.className = "participant-name";
-      link.href = commentLink(person); link.target = "_blank"; link.rel = "noopener noreferrer";
-      link.textContent = participantLabel(person);
-      head.append(link);
-      if (person.automaticStatus === "eligible") {
-        const toggle = document.createElement("button");
-        toggle.type = "button";
-        toggle.dataset.selectKey = person.key;
-        toggle.textContent = person.included ? "불포함" : "포함";
-        toggle.setAttribute("aria-label", participantLabel(person) + (person.included ? " 불포함으로 변경" : " 포함으로 변경"));
-        toggle.disabled = !editable;
-        head.append(toggle);
+    if (group === "excluded") {
+      const buckets = new Map();
+      for (const person of members) {
+        const [key, label] = exclusionGroup(person);
+        if (!buckets.has(key)) buckets.set(key, { key, label, people: [] });
+        buckets.get(key).people.push(person);
       }
-      const profile = document.createElement("small");
-      const visibility = person.profileStatus === "public" ? "공개" : person.profileStatus === "partial" ? "일부공개" : person.profileStatus === "private" ? "비공개" : person.profileStatus === "missing" ? "없음" : "미확인";
-      profile.textContent = "갤로그 " + visibility + " · 참여 댓글 " + person.commentCount + "개 · 댓글 #" + person.firstCommentId;
-      const reason = document.createElement("small");
-      reason.textContent = person.reason;
-      item.append(head, profile, reason);
-      fragment.append(item);
+      const visibleKeys = new Set(visible.map((person) => person.key));
+      for (const bucket of buckets.values()) {
+        const matches = bucket.people.filter((person) => visibleKeys.has(person.key));
+        if (!matches.length) continue;
+        const item = document.createElement("li");
+        const detail = document.createElement("details");
+        detail.className = "exclusion-reason";
+        detail.dataset.exclusionReason = bucket.key;
+        detail.open = Boolean(query) || (exclusionGroupsOpen.get(bucket.key) ?? false);
+        const summary = document.createElement("summary");
+        const label = document.createElement("span");
+        label.className = "exclusion-reason-label";
+        label.textContent = bucket.label;
+        const count = document.createElement("span");
+        count.className = "exclusion-reason-count";
+        count.textContent = (query ? number(matches.length) + " / " : "") + number(bucket.people.length) + "명";
+        summary.append(label, count);
+        const names = document.createElement("ul");
+        names.className = "exclusion-reason-list";
+        for (const person of matches) names.append(previewPerson(person, editable));
+        detail.append(summary, names);
+        item.append(detail);
+        fragment.append(item);
+      }
+    } else {
+      for (const person of visible) fragment.append(previewPerson(person, editable));
     }
     list.replaceChildren(fragment);
     list.scrollTop = scrollTop;
     $(group + "-empty").hidden = visible.length > 0;
     $(group + "-empty").textContent = query ? "검색 결과가 없습니다." : group === "included" ? "포함된 참가자가 없습니다." : group === "excluded" ? "불포함 참가자가 없습니다." : "미확인 참가자가 없습니다.";
   }
+  previousPreviewQuery = query;
 }
 function changeSelection(key) {
   if (!completed || controller || exportBusy || drawn) return;
@@ -493,7 +545,11 @@ function changeSelection(key) {
   else manualExclusions.add(key);
   appendLog(participantLabel(person) + (manualExclusions.has(key) ? " / 수동 불포함" : " / 수동 포함"));
   render();
-  [...$("preview-panel").querySelectorAll("button[data-select-key]")].find((button) => button.dataset.selectKey === key)?.focus({ preventScroll: true });
+  let focusTarget = [...$("preview-panel").querySelectorAll("button[data-select-key]")].find((button) => button.dataset.selectKey === key);
+  for (let parent = focusTarget?.parentElement; parent; parent = parent.parentElement) {
+    if (parent instanceof HTMLDetailsElement && !parent.open) focusTarget = parent.querySelector(":scope > summary");
+  }
+  focusTarget?.focus({ preventScroll: true });
 }
 function selectAll(include) {
   if (!completed || controller || exportBusy || drawn) return;
@@ -685,6 +741,6 @@ $("copy-result").addEventListener("click", copyResult);
 $("example-button").addEventListener("click", () => { $("post-url").value = "https://gall.dcinside.com/mgallery/board/view/?id=aidevelop&no=3524"; });
 for (const input of $("analysis-form").querySelectorAll('input[name="activity-mode"]')) input.addEventListener("change", syncActivityMode);
 $("period-unit").addEventListener("change", syncPeriodMode);
-for (const event of ["input", "change"]) $("analysis-form").addEventListener(event, () => { if (settings) render(); });
+for (const event of ["input", "change"]) $("analysis-form").addEventListener(event, () => { if (settings) updateExportButtons(); });
 setRunning(false);
 setInterval(() => { if (controller) updateElapsed(); }, 1000);

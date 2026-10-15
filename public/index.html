@@ -73,11 +73,11 @@
             <div class="preview-bulk"><button id="include-all" type="button" disabled>통과자 전체 포함</button><button id="exclude-all" type="button" disabled>통과자 전체 불포함</button></div>
           </div>
           <div class="preview-groups">
-            <section class="preview-group included-group" aria-labelledby="included-title"><h3 id="included-title">포함 <span id="included-count">0명</span></h3><ul id="included-list" class="preview-list"></ul><p id="included-empty" class="preview-empty">포함된 참가자가 없습니다.</p></section>
-            <section class="preview-group excluded-group" aria-labelledby="excluded-title"><h3 id="excluded-title">불포함 <span id="excluded-count">0명</span></h3><ul id="excluded-list" class="preview-list"></ul><p id="excluded-empty" class="preview-empty">불포함 참가자가 없습니다.</p></section>
-            <section id="pending-group" class="preview-group pending-group" aria-labelledby="pending-title" hidden><h3 id="pending-title">미확인 <span id="pending-count">0명</span></h3><ul id="pending-list" class="preview-list"></ul><p id="pending-empty" class="preview-empty">검색 결과가 없습니다.</p></section>
+            <details id="included-group" class="preview-group included-group" open><summary><h3 id="included-title">포함 <span id="included-count">0명</span></h3></summary><ul id="included-list" class="preview-list"></ul><p id="included-empty" class="preview-empty">포함된 참가자가 없습니다.</p></details>
+            <details id="excluded-group" class="preview-group excluded-group" open><summary><h3 id="excluded-title">불포함 <span id="excluded-count">0명</span></h3></summary><p class="exclusion-help">사유를 누르면 해당 참가자를 확인할 수 있습니다.</p><ul id="excluded-list" class="preview-list"></ul><p id="excluded-empty" class="preview-empty">불포함 참가자가 없습니다.</p></details>
+            <details id="pending-group" class="preview-group pending-group" open hidden><summary><h3 id="pending-title">미확인 <span id="pending-count">0명</span></h3></summary><ul id="pending-list" class="preview-list"></ul><p id="pending-empty" class="preview-empty">검색 결과가 없습니다.</p></details>
           </div>
-          <p class="preview-rule">닉네임 뒤 괄호는 계정의 공개 식별코드입니다. 비공개·기준 미달 참가자는 포함할 수 없습니다. 추첨 후에는 명단이 고정됩니다.</p>
+          <p class="preview-rule">항목 제목을 누르면 명단을 펼치거나 접습니다. 닉네임 뒤 괄호는 계정의 공개 식별코드입니다. 비공개·기준 미달 참가자는 포함할 수 없습니다. 추첨 후에는 명단이 고정됩니다.</p>
           <div class="preview-confirm"><p id="review-message" role="status" aria-live="polite">참가자를 확인하고 있습니다.</p><button id="draw-button" class="primary-button" type="button" disabled>포함 대상 추첨하기</button></div>
         </fieldset>
         <fieldset id="winner-section" class="winner-section" hidden aria-live="polite"><legend>당첨자</legend><div id="winner-list" class="winner-list"></div><p id="draw-detail"></p></fieldset>
