@@ -1,5 +1,5 @@
 import { parsePostInput, parsePostUrl } from "../public/lottery-core.js";
-import { requestBody, respond, attr, decode, text, writerIdentity, authorHash, dcFetch, bodyText, pause, createBudget, errorResponse, UpstreamError,
+import { requestBody, respond, attr, decode, text, writerIdentity, authorHash, dcFetch, bodyText, pause, createBudget, errorResponse, UpstreamError, instrument,
   postSourceCache, commentPageCache, looksBlocked, markBlocked } from "../lib/dcinside.js";
 
 function input(html, name) {
@@ -36,7 +36,7 @@ function withPost(source, sessionKey) {
 // instance (keyed by the requested URL); the author key is derived per run from the session key.
 export async function loadCommentSource(gallery, sessionKey, { budget, cache = true } = {}) {
   const cached = cache ? postSourceCache.get(gallery.url) : undefined;
-  if (cached) return withPost(cached, sessionKey);
+  if (cached) { if (budget) budget.stats.cacheHits += 1; return withPost(cached, sessionKey); }
   const requested = gallery.url;
   const original = gallery;
   const visited = new Set();
@@ -79,7 +79,7 @@ export async function readCommentPage(source, page, { budget, fresh = true } = {
   const cacheKey = gallery.url + "#" + page;
   if (!fresh) {
     const cached = commentPageCache.get(cacheKey);
-    if (cached) return cached;
+    if (cached) { if (budget) budget.stats.cacheHits += 1; return cached; }
   }
   const form = new URLSearchParams({ id: gallery.id, no: gallery.no, cmt_id: gallery.id, cmt_no: gallery.no,
     e_s_n_o: token, comment_page: String(page), sort: "N", prevCnt: "", board_type: fields.board_type,
@@ -110,6 +110,8 @@ export async function readCommentPage(source, page, { budget, fresh = true } = {
 }
 
 export default async function handler(req, res, options = {}) {
+  const budget = options.budget || createBudget();
+  instrument(res, "comments", budget, options.logger);
   const body = requestBody(req, res);
   if (!body) return;
   let gallery;
@@ -117,7 +119,6 @@ export default async function handler(req, res, options = {}) {
   const startPage = Number(body.startPage || 1);
   const count = Number(body.count || 1);
   if (!Number.isInteger(startPage) || startPage < 1 || startPage > 100 || !Number.isInteger(count) || count < 1 || count > 3 || startPage + count - 1 > 100) { respond(res, 400, { error: "댓글은 한 번에 3페이지, 최대 100페이지까지 조회할 수 있습니다.", errorKind: "bad_request" }); return; }
-  const budget = options.budget || createBudget();
   const pauseMs = options.pauseMs ?? 300;
   const pages = [];
   let source;

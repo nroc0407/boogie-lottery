@@ -17,7 +17,7 @@ export async function call(handler, body, options = {}, headers = {}) {
   let text = "";
   const sent = {};
   const res = { setHeader(key, value) { sent[key.toLowerCase()] = value; }, end(value) { text = value; } };
-  await handler({ method: "POST", headers, body }, res, { pauseMs: 0, ...options });
+  await handler({ method: "POST", headers, body }, res, { pauseMs: 0, logger: () => {}, ...options });
   return { status: res.statusCode, body: JSON.parse(text), headers: sent };
 }
 // Fake clock that advances on every upstream fetch, so budgets are tested without waiting.
@@ -234,4 +234,21 @@ test("인스턴스 분당 제한은 429와 남은 대기 시간을 함께 반환
   assert.equal(last.body.errorKind, "rate_limit");
   assert.ok(last.body.retryAfter >= 1 && last.body.retryAfter <= 60);
   assert.equal(last.headers["retry-after"], String(last.body.retryAfter));
+});
+
+test("API 로그는 한 줄 JSON으로 상태·소요 시간·상위 요청 수만 남기고 UID·닉네임·IP는 남기지 않음", async (t) => {
+  t.mock.method(globalThis, "fetch", async (url) => String(url).includes("/board/comment/")
+    ? Response.json({ comments: [{ no: "1", user_id: "alpha", name: "비밀닉네임", ip: "198.51", memo: "참여" }], total_cnt: 1 })
+    : String(url).startsWith("https://gallog.") ? new Response(profile(String(url).includes("/comment") ? "comment" : "posting")) : new Response(postHtml));
+  const lines = [];
+  await call(commentsHandler, { postUrl: target.url, sessionKey, startPage: 1, count: 1 }, { logger: (line) => lines.push(line) }, { "x-forwarded-for": "192.0.2.77" });
+  await call(activityHandler, activityBody({ action: "access", targets: [{ authorKey: keyFor("alpha"), sourcePage: 1 }] }), { logger: (line) => lines.push(line) });
+  await call(commentsHandler, { postUrl: target.url, sessionKey: "bad" }, { logger: (line) => lines.push(line) });
+  assert.equal(lines.length, 3);
+  const [comments, activity, rejected] = lines.map((line) => JSON.parse(line));
+  assert.deepEqual([comments.endpoint, comments.status, comments.upstreamRequests, comments.upstreamStatus, comments.pages], ["comments", 200, 2, 200, 1]);
+  assert.ok(Number.isInteger(comments.durationMs));
+  assert.deepEqual([activity.endpoint, activity.targets, activity.deferred, activity.cacheHits, activity.upstreamRequests], ["comment-activity", 1, 0, 2, 2]);
+  assert.deepEqual([rejected.status, rejected.errorKind], [400, "bad_request"]);
+  for (const secret of ["alpha", "비밀닉네임", "198.51", "192.0.2.77", "aidevelop"]) assert.ok(!lines.join("\n").includes(secret), secret);
 });

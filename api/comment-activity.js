@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { parsePostUrl } from "../public/lottery-core.js";
 import { loadCommentSource, readCommentPage, parseComments } from "./comments.js";
-import { requestBody, respond, attr, decode, text, gallogFetch, bodyText, pause, createBudget, errorResponse, looksBlocked, markBlocked } from "../lib/dcinside.js";
+import { requestBody, respond, attr, decode, text, gallogFetch, bodyText, pause, createBudget, errorResponse, looksBlocked, markBlocked, instrument } from "../lib/dcinside.js";
 
 const MAX_PROFILE_PAGES = 2000;
 const PATHS = { post: "posting", comment: "comment" };
@@ -139,6 +139,8 @@ function validTarget(target, accessOnly) {
 }
 
 export default async function handler(req, res, options = {}) {
+  const budget = options.budget || createBudget();
+  instrument(res, "comment-activity", budget, options.logger);
   const body = requestBody(req, res);
   if (!body) return;
   let gallery;
@@ -157,7 +159,7 @@ export default async function handler(req, res, options = {}) {
     respond(res, 400, { error: "갤로그 조회 대상·기간·페이지가 올바르지 않습니다.", errorKind: "bad_request" }); return;
   }
   const context = { gallery, sessionKey: body.sessionKey, cutoff, asOf, accessOnly, source: null,
-    budget: options.budget || createBudget(), pauseMs: options.pauseMs ?? 300 };
+    budget, pauseMs: options.pauseMs ?? 300 };
   if (!batch) {
     // Single-participant form kept for open tabs from the previous release.
     const pages = [];

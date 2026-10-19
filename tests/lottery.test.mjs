@@ -58,7 +58,7 @@ test("공유 주소의 디시 이동 안내를 따라 같은 글의 종류와 �
       const res = { setHeader() {}, end(value) { body = JSON.parse(value); } };
       await commentsHandler({ method: "POST", headers: {}, body: {
         postUrl: "https://m.dcinside.com/board/aidevelop/3524", sessionKey, startPage: 1, count: 1,
-      } }, res);
+      } }, res, { logger: () => {} });
       assert.equal(res.statusCode, 200);
       assert.equal(body.post.type, kind);
       const expected = parseComments(raw, body.post, sessionKey)[0];
@@ -127,7 +127,7 @@ test("활동 API는 기간 제한 없음에서 2년 이전 기록도 집계하�
   const request = async (changes = {}) => {
     let body;
     const res = { setHeader() {}, end(value) { body = JSON.parse(value); } };
-    await activityHandler({ method: "POST", headers: {}, body: { ...query, ...changes } }, res);
+    await activityHandler({ method: "POST", headers: {}, body: { ...query, ...changes } }, res, { logger: () => {} });
     return { status: res.statusCode, body };
   };
   const unlimited = await request();
