@@ -348,3 +348,35 @@ export function classifyApiFailure({ status = 0, body = null, networkError = fal
 export function retryBackoffMs(attempt, random = Math.random) {
   return Math.min(6000, 1200 * 2 ** Math.max(0, attempt - 1)) + Math.floor(random() * 400);
 }
+
+// Canonical text of the final included roster and the draw settings. Hashing it with SHA-256 gives a
+// fingerprint anyone can recompute from the exported JSON: same roster and settings, same hash,
+// regardless of the order participants were collected or selected in.
+export function rosterCanonical({ post, settings, participants, cutoff, asOf, winnerCount = settings.winnerCount }) {
+  const compare = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+  const roster = participants.filter((person) => person.included ?? person.status === "eligible")
+    .map((person) => [String(person.identityCode || ""), String(person.firstCommentId)])
+    .sort((a, b) => compare(a[0], b[0]) || compare(a[1], b[1]));
+  const { minPosts, minComments, minTotal } = activityCriteria(settings);
+  const unlimited = settings.periodUnit === "all";
+  return JSON.stringify({
+    format: "boogie-roster", version: 1, post: post.url,
+    period: { unit: settings.periodUnit, months: unlimited ? null : settings.periodValue,
+      from: unlimited ? null : new Date(cutoff).toISOString(), through: new Date(asOf).toISOString() },
+    criteria: { mode: settings.activityMode, minPosts, minComments, minTotal },
+    winnerCount, roster,
+  });
+}
+
+export async function sha256Hex(value, subtle = globalThis.crypto?.subtle) {
+  if (!subtle) throw new Error("이 브라우저에서는 SHA-256을 계산할 수 없습니다.");
+  const digest = await subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+export function shortFingerprint(hash) {
+  return hash ? hash.slice(0, 12).match(/.{4}/g).join("-") : "";
+}
+
+export const ROSTER_VERIFY_NOTE = "포함(included: true) 참가자의 [identityCode, entryCommentId] 목록을 정렬한 값이 canonical의 roster와 같은지 확인한 뒤, "
+  + "canonical 문자열을 UTF-8 그대로 SHA-256으로 계산하면 sha256 값과 같아야 합니다.";

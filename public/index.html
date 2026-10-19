@@ -78,9 +78,11 @@
             <details id="pending-group" class="preview-group pending-group" open hidden><summary><h3 id="pending-title">미확인 <span id="pending-count">0명</span></h3></summary><ul id="pending-list" class="preview-list"></ul><p id="pending-empty" class="preview-empty">검색 결과가 없습니다.</p></details>
           </div>
           <p class="preview-rule">항목 제목을 누르면 명단을 펼치거나 접습니다. 닉네임 뒤 괄호는 계정의 공개 식별코드입니다. 비공개·기준 미달 참가자는 포함할 수 없습니다. 추첨 후에는 명단이 고정됩니다.</p>
+          <p id="roster-fingerprint" class="roster-fingerprint" hidden><span id="roster-fingerprint-value"></span><small>포함 명단·평가기간·기준·당첨 인원으로 만든 SHA-256 앞자리입니다. 추첨 전에 공개해 두면 명단을 바꾸지 않았음을 확인할 수 있습니다.</small></p>
           <div class="preview-confirm"><p id="review-message" role="status" aria-live="polite">참가자를 확인하고 있습니다.</p><div class="confirm-actions"><button id="recheck-button" type="button" hidden>미확인만 다시 확인</button><button id="draw-button" class="primary-button" type="button" disabled>포함 대상 추첨하기</button></div></div>
         </fieldset>
-        <fieldset id="winner-section" class="winner-section" hidden aria-live="polite"><legend>당첨자</legend><div id="winner-list" class="winner-list"></div><p id="draw-detail"></p></fieldset>
+        <fieldset id="winner-section" class="winner-section" hidden aria-live="polite"><legend>당첨자</legend><div id="winner-list" class="winner-list"></div><p id="draw-detail"></p><p id="draw-hash" class="draw-hash"></p>
+          <details id="draw-log-panel" class="draw-log-panel" hidden><summary>이 탭의 추첨 기록 <span id="draw-log-count">0건</span></summary><ol id="draw-log"></ol><p class="draw-log-note">새 참가자 확인을 해도 남고, 탭을 닫거나 새로 고치면 사라집니다. JSON 저장에 함께 담깁니다.</p></details></fieldset>
         <details class="participants-panel">
           <summary>참가자 상세 내역 <span id="participant-count"></span></summary>
           <div class="table-wrap"><table><thead><tr><th>참가자</th><th>유형</th><th>갤로그</th><th>참여 댓글</th><th>글</th><th>댓글</th><th>확인 합계</th><th>최근 활동</th><th>판정</th></tr></thead><tbody id="participant-table"></tbody></table></div>

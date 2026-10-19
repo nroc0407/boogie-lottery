@@ -1,5 +1,6 @@
 import { parsePostInput, evaluationCutoff, periodLabel, criteriaLabel, participantLabel, isReadableProfile, applyParticipantSelection, collectParticipants, evaluateParticipants, pickWinners,
-  createActivity, createActivityScan, applyAccessResult, nextActivityRequest, applyActivityResult, recordActivityFailure, classifyApiFailure, retryBackoffMs } from "/lottery-core.js";
+  createActivity, createActivityScan, applyAccessResult, nextActivityRequest, applyActivityResult, recordActivityFailure, classifyApiFailure, retryBackoffMs,
+  rosterCanonical, sha256Hex, shortFingerprint } from "/lottery-core.js";
 import { createRecord, jsonBlob, pngBlob, zipBlob, exportBaseName, downloadBlob } from "/result-export.js";
 
 const $ = (id) => document.getElementById(id);
@@ -26,6 +27,11 @@ let sessionKey = "";
 let blockedPauses = 0;
 let drawn = null;
 let draws = [];
+// Every draw and reroll in this tab, kept across new runs until the tab is closed or reloaded.
+const sessionDrawLog = [];
+let drawBusy = false;
+let fingerprint = { canonical: "", hash: "", failed: false };
+let fingerprintJob = 0;
 let progressHistory = [];
 let exportBusy = false;
 const manualExclusions = new Set();
@@ -493,29 +499,83 @@ function reviewState(people = selectedParticipants()) {
   return { matches, included, pending, winnerCount,
     canDraw: completed && !controller && !exportBusy && matches && !pending && included >= winnerCount && winnerCount > 0 };
 }
-function makeDraw() {
+async function makeDraw(type, reason = "") {
   const review = reviewState();
   if (!review.canDraw) throw new Error("포함 대상과 당첨 인원을 확인해주세요. 설정을 바꿨다면 참가자를 다시 확인해야 합니다.");
   settings.winnerCount = review.winnerCount;
+  // The hash and the draw use the same roster snapshot.
+  const people = selectedParticipants();
+  const canonical = rosterCanonical({ post, settings, participants: people, cutoff, asOf, winnerCount: settings.winnerCount });
+  let rosterHash = "";
+  try { rosterHash = await sha256Hex(canonical); } catch { appendLog("명단 해시 계산 불가 / 이 브라우저는 SHA-256을 지원하지 않습니다.", "error"); }
   $("export-feedback").textContent = "";
   setPhase("draw");
-  appendLog("당첨자 추첨 / 포함 " + review.included + "명");
-  const winners = pickWinners(selectedParticipants(), settings.winnerCount);
-  drawn = { id: crypto.randomUUID(), at: Date.now(), winners };
+  appendLog((type === "reroll" ? "재추첨" : "당첨자 추첨") + " / 포함 " + review.included + "명", "info", rosterHash ? "명단 지문 " + shortFingerprint(rosterHash) : "");
+  const winners = pickWinners(people, settings.winnerCount);
+  drawn = { id: crypto.randomUUID(), at: Date.now(), winners, type, reason, canonical, rosterHash, sequence: draws.length + 1, included: review.included };
   draws.push(drawn);
+  sessionDrawLog.push({ sequence: sessionDrawLog.length + 1, drawId: drawn.id, type, reason, at: new Date(drawn.at).toISOString(),
+    post: { url: post.url, title: post.title || "" }, runStartedAt: new Date(asOf).toISOString(), runDrawSequence: drawn.sequence,
+    rosterSha256: rosterHash || null, includedCount: review.included, winnerCount: winners.length,
+    winners: winners.map((person, index) => ({ rank: index + 1, displayName: participantLabel(person), identityCode: person.identityCode || "", entryCommentId: person.firstCommentId })) });
   setPhase("done");
   render();
 }
-function confirmDraw() {
-  if (controller || exportBusy || !completed || drawn) return;
-  try { makeDraw(); status("추첨 완료", "success", drawn.winners.length + "명 당첨"); }
+async function drawWith(type, reason) {
+  drawBusy = true;
+  updateExportButtons();
+  try { await makeDraw(type, reason); status(type === "reroll" ? "재추첨 완료" : "추첨 완료", "success", drawn.winners.length + "명 당첨"); }
   catch (error) { status(error.message, "error"); }
-  render();
+  finally { drawBusy = false; render(); }
+}
+function confirmDraw() {
+  if (controller || exportBusy || drawBusy || !completed || drawn) return;
+  drawWith("draw", "");
 }
 function redraw() {
-  if (controller || exportBusy || !completed) return;
-  try { makeDraw(); status("재추첨 완료", "success", drawn.winners.length + "명 당첨"); }
-  catch (error) { status(error.message, "error"); }
+  if (controller || exportBusy || drawBusy || !completed || !drawn) return;
+  const reason = window.prompt("재추첨 사유를 적어주세요 (선택). 추첨 기록과 JSON에 남습니다. 취소하면 재추첨하지 않습니다.", "");
+  if (reason === null) return;
+  drawWith("reroll", reason.trim().slice(0, 200));
+}
+// Pre-draw fingerprint: announcing it before drawing shows the roster was not changed afterwards.
+function updateFingerprint(review) {
+  const box = $("roster-fingerprint");
+  const ready = drawn || (completed && !controller && !review.pending && review.matches && review.included > 0);
+  box.hidden = !ready;
+  if (!ready) return;
+  const canonical = drawn ? drawn.canonical : rosterCanonical({ post, settings, participants: selectedParticipants(), cutoff, asOf, winnerCount: review.winnerCount });
+  const paint = () => {
+    const value = fingerprint.hash ? shortFingerprint(fingerprint.hash) : fingerprint.failed ? "계산 불가" : "계산 중…";
+    const label = "명단 지문 " + value + " · 포함 " + number(review.included) + "명 · 당첨 " + number(drawn ? drawn.winners.length : review.winnerCount) + "명";
+    if ($("roster-fingerprint-value").textContent !== label) $("roster-fingerprint-value").textContent = label;
+    box.title = fingerprint.hash ? "SHA-256 " + fingerprint.hash : "";
+  };
+  if (canonical === fingerprint.canonical) { paint(); return; }
+  const job = ++fingerprintJob;
+  fingerprint = drawn?.rosterHash ? { canonical, hash: drawn.rosterHash, failed: false } : { canonical, hash: "", failed: false };
+  paint();
+  if (fingerprint.hash) return;
+  sha256Hex(canonical).then((hash) => { if (job === fingerprintJob) { fingerprint.hash = hash; paint(); } })
+    .catch(() => { if (job === fingerprintJob) { fingerprint.failed = true; paint(); } });
+}
+function currentRoster() {
+  if (drawn) return drawn.rosterHash ? { canonical: drawn.canonical, hash: drawn.rosterHash } : null;
+  return fingerprint.hash && reviewState().canDraw ? { canonical: fingerprint.canonical, hash: fingerprint.hash } : null;
+}
+function renderDrawLog() {
+  $("draw-log-panel").hidden = sessionDrawLog.length === 0;
+  $("draw-log-count").textContent = number(sessionDrawLog.length) + "건";
+  const list = $("draw-log");
+  if (list.children.length === sessionDrawLog.length) return;
+  list.replaceChildren(...sessionDrawLog.map((entry) => {
+    const item = document.createElement("li");
+    const time = new Date(entry.at).toLocaleTimeString("ko-KR", { timeZone: "Asia/Seoul", hour12: false });
+    item.textContent = "#" + entry.sequence + " " + time + " · " + (entry.type === "reroll" ? "재추첨" : "추첨") + " · 글 " + new URL(entry.post.url).searchParams.get("no")
+      + " · 당첨 " + entry.winners.map((winner) => winner.displayName).join(", ")
+      + (entry.reason ? " · 사유: " + entry.reason : "") + (entry.rosterSha256 ? " · 지문 " + shortFingerprint(entry.rosterSha256) : "");
+    return item;
+  }));
 }
 function commentLink(person) {
   const link = new URL(post.url);
@@ -528,7 +588,8 @@ function updateReviewControls(review) {
   $("exclude-all").disabled = !editable;
   for (const button of $("preview-panel").querySelectorAll("button[data-select-key]")) button.disabled = !editable;
   $("draw-button").hidden = Boolean(drawn);
-  $("draw-button").disabled = !review.canDraw || Boolean(drawn);
+  $("draw-button").disabled = !review.canDraw || Boolean(drawn) || drawBusy;
+  updateFingerprint(review);
   $("draw-button").textContent = "포함 " + number(review.included) + "명 중 " + number(review.winnerCount) + "명 추첨하기";
   const recheckable = commentsCollected && !drawn && review.pending > 0;
   $("recheck-button").hidden = !recheckable;
@@ -724,7 +785,9 @@ function renderWinners() {
     article.append(place, link, detail);
     list.append(article);
   });
-  $("draw-detail").textContent = new Date(drawn.at).toLocaleTimeString("ko-KR", { timeZone: "Asia/Seoul", hour12: false }) + " / " + drawn.winners.length + "명";
+  $("draw-detail").textContent = new Date(drawn.at).toLocaleTimeString("ko-KR", { timeZone: "Asia/Seoul", hour12: false }) + " / " + drawn.winners.length + "명 / "
+    + drawn.sequence + "회차" + (drawn.sequence > 1 ? " (재추첨 " + (drawn.sequence - 1) + "회)" : "") + (drawn.reason ? " / 사유: " + drawn.reason : "");
+  $("draw-hash").textContent = drawn.rosterHash ? "명단 해시 SHA-256 " + drawn.rosterHash : "명단 해시를 계산하지 못했습니다.";
 }
 function render() {
   renderProgress();
@@ -751,6 +814,7 @@ function render() {
   renderPreview(people);
   renderRows(people);
   renderWinners();
+  renderDrawLog();
 }
 function exportCsv() {
   const winnerKeys = new Set(drawn?.winners.map((person) => person.key) || []);
@@ -779,7 +843,7 @@ function exportCsv() {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 function updateExportButtons() {
-  const busy = exportBusy || Boolean(controller);
+  const busy = exportBusy || drawBusy || Boolean(controller);
   const review = reviewState();
   $("start-button").disabled = busy;
   $("redraw-button").disabled = busy || !drawn || !review.canDraw;
@@ -791,7 +855,7 @@ function updateExportButtons() {
 async function exportFiles(format) {
   if (exportBusy || controller || !asOf || (format !== "json" && !drawn)) return;
   const record = createRecord({ post, settings, participants: selectedParticipants(), commentsCount: comments.length, cutoff, asOf, completed,
-    phase, tone: statusTone, message: $("status-text").textContent, draws, logs: progressHistory });
+    phase, tone: statusTone, message: $("status-text").textContent, draws, logs: progressHistory, roster: currentRoster(), drawLog: sessionDrawLog });
   const name = exportBaseName(record);
   exportBusy = true;
   updateExportButtons();
@@ -822,7 +886,9 @@ async function copyResult() {
     "공개 갤로그 필수 / " + post.id + " 갤러리의 글·댓글만 평가",
     "참가 " + participants.length + "명 / 포함 " + selectedParticipants().filter((p) => p.status === "eligible").length + "명",
     "", "당첨자", ...drawn.winners.map((person, index) => (index + 1) + ". " + participantLabel(person) + " (참여 댓글 " + person.firstCommentId + ")"),
-    "", "추첨 번호: " + drawn.id].join("\n");
+    "", "추첨 번호: " + drawn.id + " · " + drawn.sequence + "회차" + (drawn.reason ? " · 재추첨 사유: " + drawn.reason : ""),
+    "명단 해시(SHA-256): " + (drawn.rosterHash || "계산 불가"),
+    "검증: JSON 기록의 rosterHash.canonical 문자열을 SHA-256으로 계산하면 위 값과 같습니다."].join("\n");
   try { await navigator.clipboard.writeText(message); status("결과 복사 완료", "success"); }
   catch { status("복사 권한이 없습니다. 결과 CSV를 저장해주세요.", "error"); }
 }

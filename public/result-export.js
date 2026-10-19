@@ -1,6 +1,6 @@
-import { criteriaLabel, periodLabel, participantLabel } from "./lottery-core.js";
+import { criteriaLabel, periodLabel, participantLabel, ROSTER_VERIFY_NOTE } from "./lottery-core.js";
 
-export function createRecord({ post, settings, participants, commentsCount, cutoff, asOf, completed, phase, tone, message, draws, logs }, exportedAt = Date.now()) {
+export function createRecord({ post, settings, participants, commentsCount, cutoff, asOf, completed, phase, tone, message, draws, logs, roster = null, drawLog = [] }, exportedAt = Date.now()) {
   const link = (person) => {
     const url = new URL(post.url);
     url.searchParams.set("fcno", person.firstCommentId);
@@ -30,7 +30,7 @@ export function createRecord({ post, settings, participants, commentsCount, cuto
   });
   return {
     format: "boogie-lottery-record",
-    schemaVersion: 1,
+    schemaVersion: 2,
     exportedAt: new Date(exportedAt).toISOString(),
     source: { title: post.title || "", url: post.url, galleryId: post.id, galleryType: post.type, postNo: post.no },
     run: { startedAt: new Date(asOf).toISOString(), completed, phase, tone, message },
@@ -53,9 +53,12 @@ export function createRecord({ post, settings, participants, commentsCount, cuto
       pending: participants.filter((person) => person.status === "pending").length,
     },
     participants: participants.map(personRecord),
+    rosterHash: roster?.hash ? { algorithm: "SHA-256", sha256: roster.hash, canonical: roster.canonical, howToVerify: ROSTER_VERIFY_NOTE } : null,
     latestDrawId: draws.at(-1)?.id || null,
-    draws: draws.map((draw, index) => ({ id: draw.id, sequence: index + 1, winnerCount: draw.winners.length, at: new Date(draw.at).toISOString(),
+    draws: draws.map((draw, index) => ({ id: draw.id, sequence: index + 1, type: draw.type || (index ? "reroll" : "draw"), reason: draw.reason || "",
+      winnerCount: draw.winners.length, at: new Date(draw.at).toISOString(), rosterSha256: draw.rosterHash || null,
       winners: draw.winners.map((person, rank) => ({ rank: rank + 1, ...personRecord(person) })) })),
+    drawLog: { scope: "browser-tab", note: "이 탭에서 실행한 모든 추첨·재추첨 기록입니다. 새로 고치면 사라집니다.", entries: drawLog.map((entry) => ({ ...entry })) },
     logs: { retainedLimit: 120, entries: logs.map((entry) => ({ ...entry })) },
   };
 }
@@ -151,7 +154,11 @@ export async function pngBlob(record) {
   }
   y += 10;
   text("추첨 시각: " + dateTime(draw.at), 20, "#8fba9b");
-  text("추첨 번호: " + draw.id, 20, "#8fba9b");
+  text("추첨 번호: " + draw.id + " · " + draw.sequence + "회차" + (draw.type === "reroll" ? " (재추첨)" : ""), 20, "#8fba9b");
+  if (draw.reason) text("재추첨 사유: " + draw.reason, 20, "#8fba9b");
+  y += 8;
+  text("명단 해시(SHA-256): " + (draw.rosterSha256 || "계산 불가"), 18, "#bcecc7");
+  text("검증: JSON 기록의 rosterHash.canonical 문자열을 SHA-256으로 계산해 위 값과 비교합니다.", 17, "#8fba9b");
   text("확인한 활동 수는 최소 건수입니다. 같은 계정은 1명으로 처리합니다.", 18, "#8fba9b");
   y += 12;
   text("원문: " + record.source.url, 18, "#8fba9b");

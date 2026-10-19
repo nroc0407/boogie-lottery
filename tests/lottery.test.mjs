@@ -290,7 +290,9 @@ test("JSON 기록은 공개 식별코드와 재추첨 내역을 보존하고 IP�
     settings: { winnerCount: 1, periodUnit: "all", periodValue: 0, activityMode: "separate", minPosts: 3, minComments: 0, minTotal: 0, requirePublicGallog: true, includeReplies: true, excludeAuthor: true, keyword: "", sessionKey: "private-session-key" },
     participants: [person, { ...person, firstCommentId: "456", exclusion: "갤로그 비공개", status: "excluded" }], commentsCount: 3,
     cutoff: 0, asOf: at, completed: true, phase: "done", tone: "success", message: "추첨 완료",
-    draws: [{ id: "first", at, winners: [person] }, { id: "second", at: at + 1000, winners: [person] }],
+    draws: [{ id: "first", at, winners: [person], rosterHash: "f".repeat(64) }, { id: "second", at: at + 1000, winners: [person], type: "reroll", reason: "당첨자 연락 불가", rosterHash: "f".repeat(64) }],
+    roster: { canonical: '{"roster":[["public_alpha","123"]]}', hash: "f".repeat(64) },
+    drawLog: [{ sequence: 1, drawId: "older-run", type: "draw", reason: "", winners: [{ rank: 1, displayName: "다른 참가자", identityCode: "x", entryCommentId: "1" }] }],
     logs: [{ elapsed: "00:01", tone: "success", message: "추첨 완료", detail: "" }] }, at + 2000);
   assert.equal(record.latestDrawId, "second");
   assert.equal(record.participants[0].displayName, "참가자 (public_alpha)");
@@ -299,6 +301,11 @@ test("JSON 기록은 공개 식별코드와 재추첨 내역을 보존하고 IP�
   assert.equal(record.participants[1].confirmedPosts, null);
   assert.equal(new URL(record.draws[1].winners[0].entryCommentUrl).searchParams.get("fcno"), "123");
   assert.equal(record.summary.excluded, 1);
+  assert.equal(record.rosterHash.sha256, "f".repeat(64));
+  assert.equal(record.rosterHash.algorithm, "SHA-256");
+  assert.match(record.rosterHash.howToVerify, /SHA-256/);
+  assert.deepEqual(record.draws.map((draw) => [draw.type, draw.reason, draw.rosterSha256]), [["draw", "", "f".repeat(64)], ["reroll", "당첨자 연락 불가", "f".repeat(64)]]);
+  assert.equal(record.drawLog.entries[0].drawId, "older-run", "The tab's draw log keeps earlier runs");
   const serialized = JSON.stringify(record);
   for (const secret of ["internal-author-key", "private-user-id", "private-ip", "private-comment-body", "private-post-key", "private-session-key"]) {
     assert.ok(!serialized.includes(secret));
