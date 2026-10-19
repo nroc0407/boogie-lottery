@@ -1,7 +1,6 @@
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-import pagesHandler from "../api/pages.js";
 import commentsHandler from "../api/comments.js";
 import commentActivityHandler from "../api/comment-activity.js";
 
@@ -12,17 +11,19 @@ const assets = new Map([
   ["/lottery-core.js", ["lottery-core.js", "text/javascript; charset=utf-8"]],
   ["/result-export.js", ["result-export.js", "text/javascript; charset=utf-8"]],
   ["/styles.css", ["styles.css", "text/css; charset=utf-8"]],
-  ["/styles-base.css", ["styles-base.css", "text/css; charset=utf-8"]],
 ]);
 const publicRoot = new URL("../public/", import.meta.url);
+// Same response headers as the deployment (CSP, frame and referrer rules) so local runs catch CSP breakage.
+const deployHeaders = JSON.parse(await readFile(new URL("../vercel.json", import.meta.url), "utf8")).headers
+  .filter((rule) => rule.source === "/(.*)").flatMap((rule) => rule.headers);
 const port = Number(process.env.PORT || 4387);
 
 const server = createServer(async (request, response) => {
   const pathname = new URL(request.url, "http://localhost").pathname;
   response.on("finish", () => console.log(`${request.method} ${pathname} ${response.statusCode}`));
-  response.setHeader("X-Content-Type-Options", "nosniff");
+  for (const { key, value } of deployHeaders) response.setHeader(key, value);
   try {
-    if (["/api/pages", "/api/comments", "/api/comment-activity"].includes(pathname)) {
+    if (["/api/comments", "/api/comment-activity"].includes(pathname)) {
       if (request.method === "POST") {
         const chunks = [];
         let length = 0;
@@ -37,7 +38,7 @@ const server = createServer(async (request, response) => {
         }
         request.body = Buffer.concat(chunks).toString("utf8");
       }
-      const handler = pathname === "/api/comments" ? commentsHandler : pathname === "/api/comment-activity" ? commentActivityHandler : pagesHandler;
+      const handler = pathname === "/api/comments" ? commentsHandler : commentActivityHandler;
       await handler(request, response);
       return;
     }

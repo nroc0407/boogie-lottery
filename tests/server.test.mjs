@@ -203,3 +203,35 @@ test("참여 댓글이 기억한 페이지에 없으면 인접 페이지(±1, ±
   assert.match(missing.body.results[0].unavailableReason, /다시 확인할 수 없어 보류/);
   assert.deepEqual(pagesRead, [2, 3, 1, 4]);
 });
+
+test("다른 사이트에서 보낸 API 요청은 403, 같은 출처와 출처 헤더가 없는 요청은 허용", async (t) => {
+  const { originAllowed } = await import("../lib/dcinside.js");
+  const host = { host: "boogie-lottery.vercel.app" };
+  assert.equal(originAllowed({ ...host, origin: "https://boogie-lottery.vercel.app" }), true);
+  assert.equal(originAllowed({ ...host, "x-forwarded-host": "preview-abc.vercel.app", origin: "https://preview-abc.vercel.app" }), true);
+  assert.equal(originAllowed({ host: "127.0.0.1:4387", origin: "http://127.0.0.1:4387" }), true);
+  assert.equal(originAllowed({ ...host, referer: "https://boogie-lottery.vercel.app/?x=1" }), true);
+  assert.equal(originAllowed(host), true, "No Origin/Referer: non-browser client, left to the rate limit");
+  for (const headers of [{ origin: "https://evil.example" }, { origin: "https://boogie-lottery.vercel.app.evil.example" }, { origin: "null" },
+    { referer: "https://evil.example/page" }, { origin: "https://boogie-lottery.vercel.app:8443" }, { "sec-fetch-site": "cross-site" },
+    { origin: "https://evil.example", referer: "https://boogie-lottery.vercel.app/" }]) {
+    assert.equal(originAllowed({ ...host, ...headers }), false, JSON.stringify(headers));
+  }
+  const fetchMock = t.mock.method(globalThis, "fetch", async () => new Response(postHtml));
+  const rejected = await call(commentsHandler, { postUrl: target.url, sessionKey, startPage: 1, count: 1 }, {}, { ...host, origin: "https://evil.example" });
+  assert.equal(rejected.status, 403);
+  assert.equal(rejected.body.errorKind, "forbidden_origin");
+  assert.equal(fetchMock.mock.callCount(), 0, "Rejected before any upstream request");
+  const activity = await call(activityHandler, activityBody({ action: "access", targets: [{ authorKey: keyFor("alpha"), sourcePage: 1 }] }), {}, { ...host, "sec-fetch-site": "cross-site" });
+  assert.equal(activity.status, 403);
+});
+
+test("인스턴스 분당 제한은 429와 남은 대기 시간을 함께 반환", async (t) => {
+  t.mock.method(globalThis, "fetch", async () => new Response("x", { status: 500 }));
+  let last;
+  for (let index = 0; index < 81; index += 1) last = await call(commentsHandler, { postUrl: target.url, sessionKey: "bad" }, {}, { "x-forwarded-for": "203.0.113.9" });
+  assert.equal(last.status, 429);
+  assert.equal(last.body.errorKind, "rate_limit");
+  assert.ok(last.body.retryAfter >= 1 && last.body.retryAfter <= 60);
+  assert.equal(last.headers["retry-after"], String(last.body.retryAfter));
+});

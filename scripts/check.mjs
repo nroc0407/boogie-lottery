@@ -15,8 +15,9 @@ assert.equal(lock.packages[""].version, pkg.version);
 assert.equal(config.framework, null);
 assert.equal(config.outputDirectory, "public");
 assert.equal(config.functions["api/*.js"].maxDuration, 30);
+assert.ok(config.headers.some((rule) => rule.headers.some((header) => header.key === "Content-Security-Policy")), "vercel.json must set a CSP");
 for (const path of ["public/index.html", "public/app.js", "public/lottery-core.js", "public/result-export.js", "public/styles.css",
-  "public/styles-base.css", "api/comments.js", "api/pages.js", "api/comment-activity.js", "lib/dcinside.js"]) await readFile(new URL(path, root));
+  "public/styles-base.css", "api/comments.js", "api/comment-activity.js", "lib/dcinside.js"]) await readFile(new URL(path, root));
 let checked = 0;
 for (const directory of ["api", "lib", "public", "scripts", "tests"]) {
   let entries;

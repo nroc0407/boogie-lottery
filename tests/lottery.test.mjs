@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { webcrypto } from "node:crypto";
 import { parsePostInput, parsePostUrl, sixMonthCutoff, evaluationCutoff, periodLabel, participantLabel, applyParticipantSelection, collectParticipants, evaluateParticipants, pickWinners } from "../public/lottery-core.js";
 import commentsHandler, { parseComments, nextPage, loadCommentSource } from "../api/comments.js";
-import { parsePosts } from "../api/pages.js";
 import activityHandler, { parseProfileActivity } from "../api/comment-activity.js";
 import { createRecord } from "../public/result-export.js";
 import { resetServerState } from "../lib/dcinside.js";
@@ -239,17 +238,6 @@ test("수동 불포함은 통과자에게만 적용하고 비공개·미확인�
   assert.equal(applyParticipantSelection(people)[0].included, true);
   assert.equal(applyParticipantSelection(people)[2].included, false);
   assert.equal(people[0].status, "eligible");
-});
-
-test("댓글 UID와 활동 목록 UID는 닉네임이 달라도 같은 키로 연결, 공지 제외", () => {
-  const comments = parseComments({ comments: [{ no: "1", user_id: "alpha", name: "오늘닉", memo: "참여" }] }, gallery, sessionKey);
-  const row = (type, number) => '<tr class="ub-content us-post" data-type="' + type + '" data-no="' + number + '">'
-    + '<td class="gall_num">' + number + '</td><td class="gall_writer" data-uid="alpha" data-nick="옛닉">'
-    + '<span class="nickname">옛닉</span></td><td class="gall_date" title="2026-10-05 12:00:00"></td></tr>';
-  const posts = parsePosts(row("icon_txt", "42") + row("icon_notice", "41"), gallery, sessionKey, 1);
-  assert.equal(posts.length, 1);
-  assert.equal(posts[0].authorKey, comments[0].authorKey);
-  assert.equal(posts[0].ts, Date.parse("2026-10-05T12:00:00+09:00"));
 });
 
 test("전체 활동 확인 전 0개 참가자는 보류, 확인 후에는 활동 없음으로 제외", () => {
