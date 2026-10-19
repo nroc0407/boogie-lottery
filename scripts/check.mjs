@@ -21,8 +21,7 @@ for (const path of ["public/index.html", "public/app.js", "public/lottery-core.j
 let checked = 0;
 for (const directory of ["api", "lib", "public", "scripts", "tests"]) {
   let entries;
-  try { entries = await readdir(new URL(directory + "/", root), { withFileTypes: true }); }
-  catch (error) { if (directory === "tests" && error.code === "ENOENT") continue; throw error; }
+  entries = await readdir(new URL(directory + "/", root), { withFileTypes: true });
   for (const entry of entries) {
     if (!entry.isFile() || !/\.(?:m?js)$/.test(entry.name)) continue;
     const filename = fileURLToPath(new URL(directory + "/" + entry.name, root));
@@ -33,3 +32,11 @@ for (const directory of ["api", "lib", "public", "scripts", "tests"]) {
   }
 }
 console.log("Deployment configuration, public files, lockfile and " + checked + " JavaScript files checked.");
+// The test suite gates the deployment. Tests mock fetch and never reach DCInside.
+const testFiles = (await readdir(new URL("tests/", root))).filter((name) => name.endsWith(".test.mjs")).sort()
+  .map((name) => fileURLToPath(new URL("tests/" + name, root)));
+assert.ok(testFiles.length > 0, "tests/*.test.mjs must be present in the build input");
+const tests = spawnSync(process.execPath, ["--test", ...testFiles], { stdio: "inherit", windowsHide: true });
+if (tests.error) throw tests.error;
+assert.equal(tests.status, 0, "Test suite failed");
+console.log(testFiles.length + " test files passed.");

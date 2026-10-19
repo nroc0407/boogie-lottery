@@ -5,7 +5,6 @@ docs/
 .env
 .env.*
 node_modules/
-tests/
 scripts/inspect-comments.mjs
 scripts/verify-connection.mjs
 *.log

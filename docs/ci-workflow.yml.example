@@ -20,7 +20,5 @@ jobs:
           node-version-file: .nvmrc
       - name: Install
         run: npm ci --ignore-scripts --no-audit --no-fund
-      - name: Check deployment files
+      - name: Check deployment files and run the test suite
         run: npm run check
-      - name: Test participant filtering and raffle
-        run: npm test
