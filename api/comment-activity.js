@@ -67,23 +67,41 @@ export function parseProfileActivity(html, gallery, kind, page, cutoff, asOf) {
   return result;
 }
 
+// New comments shift older ones to later pages, deletions to earlier ones. Try the remembered
+// page first, then its neighbours, before holding the participant.
+export function candidatePages(page, last = 100) {
+  return [page, page + 1, page - 1, page + 2, page - 2].filter((value) => value >= 1 && value <= last);
+}
+
 // The browser sends only the HMAC author key and the comment page. The server re-reads that
 // comment to find the gallog ID, so this endpoint cannot be used to scan arbitrary gallogs.
 async function resolveParticipant(context, target) {
   context.source ||= await loadCommentSource(context.gallery, context.sessionKey, { budget: context.budget });
-  const data = await readCommentPage(context.source, target.sourcePage, { budget: context.budget, fresh: false });
-  const validIds = new Set(parseComments(data, context.source.gallery, context.sessionKey).filter((item) => item.authorKey === target.authorKey).map((item) => item.id));
-  const raw = data.comments.find((item) => validIds.has(String(item.no)));
-  if (!raw) return { profileStatus: "unknown", unavailableReason: "참여 댓글의 작성자를 다시 확인할 수 없어 보류합니다." };
-  const uid = String(raw.user_id || raw.uid || "").trim();
-  if (!uid) return { profileStatus: "missing", unavailableReason: "연결할 갤로그가 없는 참가자" };
-  if (!/^[a-z0-9_][a-z0-9_.-]{0,99}$/i.test(uid)) return { profileStatus: "unknown", unavailableReason: "갤로그 주소를 확인할 수 없어 보류합니다." };
-  return { uid };
+  let last = 100;
+  for (const page of candidatePages(target.sourcePage)) {
+    if (page > last) continue;
+    let data;
+    try { data = await readCommentPage(context.source, page, { budget: context.budget, fresh: false }); }
+    catch (error) {
+      if (page === target.sourcePage || ["time_budget", "upstream_blocked"].includes(error?.kind)) throw error;
+      continue;
+    }
+    if (!data.nextPage) last = Math.min(last, page);
+    const validIds = new Set(parseComments(data, context.source.gallery, context.sessionKey).filter((item) => item.authorKey === target.authorKey).map((item) => item.id));
+    const raw = data.comments.find((item) => validIds.has(String(item.no)));
+    if (!raw) continue;
+    const uid = String(raw.user_id || raw.uid || "").trim();
+    if (!uid) return { profileStatus: "missing", unavailableReason: "연결할 갤로그가 없는 참가자", sourcePage: page };
+    if (!/^[a-z0-9_][a-z0-9_.-]{0,99}$/i.test(uid)) return { profileStatus: "unknown", unavailableReason: "갤로그 주소를 확인할 수 없어 보류합니다.", sourcePage: page };
+    return { uid, sourcePage: page };
+  }
+  return { profileStatus: "unknown", unavailableReason: "참여 댓글의 작성자를 다시 확인할 수 없어 보류합니다." };
 }
 
 async function checkTarget(context, target, pages) {
   const participant = await resolveParticipant(context, target);
   if (!participant.uid) return { ...participant, pages };
+  const sourcePage = participant.sourcePage;
   const requests = context.accessOnly ? [{ kind: "post", page: 1 }, { kind: "comment", page: 1 }]
     : Array.from({ length: target.count }, (_, offset) => ({ kind: target.kind, page: target.startPage + offset }));
   for (let index = 0; index < requests.length; index += 1) {
@@ -102,11 +120,11 @@ async function checkTarget(context, target, pages) {
     const result = parseProfileActivity(html, context.gallery, request.kind, request.page, context.cutoff, context.asOf);
     if (result.visibility === "unknown" && looksBlocked(html)) throw markBlocked();
     pages.push(result);
-    if (result.visibility === "private") return { profileStatus: "private", unavailableReason: result.unavailableReason, pages: [] };
-    if (result.visibility === "unknown") return { profileStatus: "unknown", unavailableReason: result.unavailableReason, pages: [] };
+    if (result.visibility === "private") return { profileStatus: "private", unavailableReason: result.unavailableReason, pages: [], sourcePage };
+    if (result.visibility === "unknown") return { profileStatus: "unknown", unavailableReason: result.unavailableReason, pages: [], sourcePage };
     if (!context.accessOnly && (result.unavailableReason || result.boundary || !result.nextPage)) break;
   }
-  return { profileStatus: pages.some((page) => page.visibility === "partial") ? "partial" : "public", pages };
+  return { profileStatus: pages.some((page) => page.visibility === "partial") ? "partial" : "public", pages, sourcePage };
 }
 
 function validTarget(target, accessOnly) {

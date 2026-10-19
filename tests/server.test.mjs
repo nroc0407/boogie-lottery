@@ -172,3 +172,34 @@ test("디시 403·429·차단 페이지는 즉시 멈추고 대기 시간을 알
     else assert.ok(result.body.blocked, next);
   }
 });
+
+test("참여 댓글이 기억한 페이지에 없으면 인접 페이지(±1, ±2)에서 다시 찾음", async (t) => {
+  const { candidatePages } = await import("../api/comment-activity.js");
+  assert.deepEqual(candidatePages(1), [1, 2, 3]);
+  assert.deepEqual(candidatePages(5), [5, 6, 4, 7, 3]);
+  assert.deepEqual(candidatePages(100), [100, 99, 98]);
+  const pagesRead = [];
+  let location = 3;
+  t.mock.method(globalThis, "fetch", async (url, init) => {
+    if (String(url).includes("/board/comment/")) {
+      const page = Number(new URLSearchParams(init.body).get("comment_page"));
+      pagesRead.push(page);
+      const comments = page === location ? [{ no: "9", user_id: "alpha", name: "ㅇㅇ", memo: "참여" }] : [{ no: String(page * 10), user_id: "other" + page, name: "ㅇㅇ", memo: "참여" }];
+      return Response.json({ comments, total_cnt: 40, pagination: page < 4 ? "viewComments(" + (page + 1) + ",'N')" : "" });
+    }
+    if (String(url).startsWith("https://gallog.")) return new Response(profile(String(url).includes("/comment") ? "comment" : "posting"));
+    return new Response(postHtml);
+  });
+  const authorKey = keyFor("alpha", "9");
+  const found = await call(activityHandler, activityBody({ action: "access", targets: [{ authorKey, sourcePage: 2 }] }));
+  assert.equal(found.body.results[0].profileStatus, "public");
+  assert.equal(found.body.results[0].sourcePage, 3, "The page where the comment now sits is returned");
+  assert.deepEqual(pagesRead, [2, 3]);
+  resetServerState();
+  pagesRead.length = 0;
+  location = 0;
+  const missing = await call(activityHandler, activityBody({ action: "access", targets: [{ authorKey, sourcePage: 2 }] }));
+  assert.equal(missing.body.results[0].profileStatus, "unknown");
+  assert.match(missing.body.results[0].unavailableReason, /다시 확인할 수 없어 보류/);
+  assert.deepEqual(pagesRead, [2, 3, 1, 4]);
+});
