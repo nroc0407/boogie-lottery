@@ -218,23 +218,28 @@ test("동명 ㅇㅇ 계정은 공개 식별코드로 구분하고 유동의 IP�
   assert.ok(!JSON.stringify(comments).includes("123.45"));
 });
 
-test("수동 불포함은 통과자에게만 적용하고 비공개·미확인을 포함으로 바꾸지 않음", () => {
+test("수동 판정은 모든 참가자에게 적용하고 미확인도 해소하며 자동 판정은 함께 보존", () => {
   const people = [
     { key: "a", status: "eligible", reason: "활동 기준 충족" },
     { key: "b", status: "eligible", reason: "활동 기준 충족" },
-    { key: "c", status: "excluded", reason: "갤로그 비공개" },
+    { key: "c", status: "excluded", reason: "갤로그 비공개", profileStatus: "private", exclusion: "갤로그 비공개" },
     { key: "d", status: "pending", reason: "확인 불가" },
   ];
-  const selected = applyParticipantSelection(people, new Set(["a", "c", "d"]));
+  const overrides = new Map([["a", { decision: "exclude", reason: "중복 계정", at: 1, automaticAtDecision: "eligible" }],
+    ["c", { decision: "include", reason: "", at: 2, automaticAtDecision: "private" }]]);
+  const selected = applyParticipantSelection(people, overrides);
   assert.equal(selected[0].included, false);
   assert.equal(selected[0].automaticStatus, "eligible");
-  assert.equal(selected[0].reason, "운영자 수동 불포함");
+  assert.equal(selected[0].reason, "수동 불포함 · 원래: 통과 · 사유: 중복 계정");
   assert.equal(selected[1].included, true);
-  assert.equal(selected[2].reason, "갤로그 비공개");
-  assert.equal(selected[2].manuallyExcluded, false);
+  assert.equal(selected[2].included, true);
+  assert.equal(selected[2].reason, "수동 포함 · 원래: 비공개");
+  assert.equal(selected[2].automaticReason, "갤로그 비공개");
   assert.equal(selected[3].status, "pending");
   assert.throws(() => pickWinners(selected, 1, webcrypto), /미확인/);
-  assert.equal(pickWinners(selected.slice(0, 3), 1, webcrypto)[0].key, "b");
+  const resolved = applyParticipantSelection(people, new Map([...overrides, ["d", { decision: "exclude", reason: "", at: 3, automaticAtDecision: "pending" }]]));
+  assert.equal(resolved[3].status, "excluded", "A manual decision resolves an unverified participant");
+  assert.deepEqual(pickWinners(resolved, 2, webcrypto).map((person) => person.key).sort(), ["b", "c"]);
   assert.equal(applyParticipantSelection(people)[0].included, true);
   assert.equal(applyParticipantSelection(people)[2].included, false);
   assert.equal(people[0].status, "eligible");

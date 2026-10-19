@@ -1,4 +1,4 @@
-import { criteriaLabel, periodLabel, participantLabel, ROSTER_VERIFY_NOTE } from "./lottery-core.js";
+import { criteriaLabel, periodLabel, participantLabel, listVisibilityCode, overrideRecord, verdictCategory, ROSTER_VERIFY_NOTE } from "./lottery-core.js";
 
 export function createRecord({ post, settings, participants, commentsCount, cutoff, asOf, completed, phase, tone, message, draws, logs, roster = null, drawLog = [] }, exportedAt = Date.now()) {
   const link = (person) => {
@@ -15,12 +15,16 @@ export function createRecord({ post, settings, participants, commentsCount, cuto
     entryCommentUrl: link(person),
     entryCommentCount: person.commentCount,
     profileStatus: person.profileStatus || "not-checked",
+    listVisibility: { post: listVisibilityCode(person, "post"), comment: listVisibilityCode(person, "comment") },
     status: person.status,
     reason: person.reason,
     automaticStatus: person.automaticStatus || person.status,
     automaticReason: person.automaticReason ?? person.reason,
+    automaticVerdict: person.automaticVerdict || verdictCategory(person)[0],
     included: person.included ?? person.status === "eligible",
+    manuallyIncluded: Boolean(person.manuallyIncluded),
     manuallyExcluded: Boolean(person.manuallyExcluded),
+    manualOverride: overrideRecord(person),
     confirmedPosts: !person.exclusion && (settings.minPosts > 0 || settings.minTotal > 0) ? person.postCount : null,
     confirmedComments: person.commentsChecked ? person.activityCommentCount : null,
     confirmedTotal: !person.exclusion && (settings.minPosts > 0 || settings.minComments > 0 || settings.minTotal > 0) ? person.totalActivityCount : null,
@@ -30,7 +34,7 @@ export function createRecord({ post, settings, participants, commentsCount, cuto
   });
   return {
     format: "boogie-lottery-record",
-    schemaVersion: 2,
+    schemaVersion: 3,
     exportedAt: new Date(exportedAt).toISOString(),
     source: { title: post.title || "", url: post.url, galleryId: post.id, galleryType: post.type, postNo: post.no },
     run: { startedAt: new Date(asOf).toISOString(), completed, phase, tone, message },
@@ -41,6 +45,7 @@ export function createRecord({ post, settings, participants, commentsCount, cuto
       activityMode: settings.activityMode,
       minPosts: settings.minPosts, minComments: settings.minComments, minTotal: settings.minTotal,
       requirePublicGallog: settings.requirePublicGallog,
+      privateListRule: "visible-only",
       includeReplies: settings.includeReplies, excludeAuthor: settings.excludeAuthor, keyword: settings.keyword,
     },
     assessment: { from: settings.periodUnit === "all" ? null : new Date(cutoff).toISOString(), through: new Date(asOf).toISOString(), datePrecision: "day", countsAreLowerBounds: true },
@@ -51,8 +56,12 @@ export function createRecord({ post, settings, participants, commentsCount, cuto
       automaticEligible: participants.filter((person) => (person.automaticStatus || person.status) === "eligible").length,
       excluded: participants.filter((person) => person.status === "excluded").length,
       pending: participants.filter((person) => person.status === "pending").length,
+      manualIncluded: participants.filter((person) => person.manuallyIncluded).length,
+      manualExcluded: participants.filter((person) => person.manuallyExcluded).length,
     },
     participants: participants.map(personRecord),
+    manualOverrides: participants.filter((person) => person.manualOverride).map((person) => ({ displayName: participantLabel(person),
+      identityCode: person.identityCode || "", entryCommentId: person.firstCommentId, ...overrideRecord(person) })),
     rosterHash: roster?.hash ? { algorithm: "SHA-256", sha256: roster.hash, canonical: roster.canonical, howToVerify: ROSTER_VERIFY_NOTE } : null,
     latestDrawId: draws.at(-1)?.id || null,
     draws: draws.map((draw, index) => ({ id: draw.id, sequence: index + 1, type: draw.type || (index ? "reroll" : "draw"), reason: draw.reason || "",
@@ -124,7 +133,7 @@ export async function pngBlob(record) {
   text(record.source.title || "제목 없는 게시글", 34, "#e1ffe8", 700);
   y += 18;
   text(periodLabel(record.settings) + " · " + criteriaLabel(record.settings));
-  text("평가 대상: " + record.source.galleryId + " · 공개 갤로그 필수", 21, "#8fba9b");
+  text("평가 대상: " + record.source.galleryId + " · 공개된 글·댓글 목록만 평가 (한쪽 비공개는 0개)", 21, "#8fba9b");
   if (record.assessment.from) text("평가기간: " + dateOnly(record.assessment.from) + " ~ " + dateOnly(record.assessment.through), 21, "#8fba9b");
   text("참여 조건: " + (record.settings.includeReplies ? "대댓글 포함" : "대댓글 제외") + " · "
     + (record.settings.excludeAuthor ? "글쓴이 제외" : "글쓴이 포함") + " · "
@@ -132,6 +141,7 @@ export async function pngBlob(record) {
   y += 16;
   text("참가 " + record.summary.participants + "명 / 포함 " + record.summary.eligible + "명 / 불포함 "
     + record.summary.excluded + "명 / 미확인 " + record.summary.pending + "명", 25, "#e1ffe8", 700);
+  text("수동 포함 " + record.summary.manualIncluded + "명 · 수동 불포함 " + record.summary.manualExcluded + "명 (명단 해시에 포함)", 21, "#8fba9b");
   y += 30;
   text("당첨자 " + draw.winners.length + "명", 26, "#52e883", 700);
   y += 14;
@@ -142,8 +152,9 @@ export async function pngBlob(record) {
   for (let index = 0; index < draw.winners.length; index += columns) {
     const row = draw.winners.slice(index, index + columns).map((person, column) => {
       const name = wrapLines(context, participantLabel(person), cardWidth - 48, nameFont);
-      const details = [person.confirmedPosts !== null ? "글 " + person.confirmedPosts + "개" : "",
-        person.confirmedComments !== null ? "댓글 " + person.confirmedComments + "개" : "", "참여 " + person.entryCommentCount + "개"].filter(Boolean).join(" · ");
+      const details = [person.listVisibility.post === "private" ? "글 비공개" : person.confirmedPosts !== null ? "글 " + person.confirmedPosts + "개" : "",
+        person.listVisibility.comment === "private" ? "댓글 비공개" : person.confirmedComments !== null ? "댓글 " + person.confirmedComments + "개" : "", "참여 " + person.entryCommentCount + "개",
+        person.manuallyIncluded ? "수동 포함" : ""].filter(Boolean).join(" · ");
       const lines = wrapLines(context, details, cardWidth - 48, detailFont);
       return { type: "card", x: 56 + column * (cardWidth + 20), y, width: cardWidth, rank: person.rank,
         name, details: lines, height: 83 + name.length * 38 + lines.length * 29 };

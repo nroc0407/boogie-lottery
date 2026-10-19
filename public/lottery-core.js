@@ -83,15 +83,57 @@ export function participantLabel(person) {
 }
 
 export function isReadableProfile(status) { return status === "public" || status === "partial"; }
+export function isListVisibility(value) { return value === "public" || value === "partial" || value === "private"; }
 
-export function applyParticipantSelection(participants, manualExclusions = new Set()) {
+export const BOTH_PRIVATE_REASON = "갤로그 비공개 (글·댓글 모두)";
+const LIST_NAMES = { post: "글", comment: "댓글" };
+const VISIBILITY_NAMES = { public: "공개", partial: "일부공개", private: "비공개" };
+
+// "글 공개 · 댓글 비공개" when the lists differ, otherwise the gallog's overall state.
+export function profileVisibilityLabel(person) {
+  const lists = person.listVisibility || {};
+  if (person.profileStatus === "private") return "비공개";
+  if (person.profileStatus === "missing") return "없음";
+  if (isReadableProfile(person.profileStatus) && (lists.post === "private" || lists.comment === "private")) {
+    return ["post", "comment"].map((kind) => LIST_NAMES[kind] + " " + (VISIBILITY_NAMES[lists[kind]] || "미확인")).join(" · ");
+  }
+  return person.profileStatus === "public" ? "공개" : person.profileStatus === "partial" ? "일부공개" : person.exclusion ? "—" : "미확인";
+}
+
+// Automatic verdict as [code, group label, short label]. Codes are stable and enter the roster hash.
+export function verdictCategory(person) {
+  const status = person.automaticStatus || person.status;
+  const lists = person.listVisibility || {};
+  if (status === "eligible") return ["eligible", "활동 기준 통과", "통과"];
+  if (status === "pending") return ["pending", "미확인", "미확인"];
+  if (person.profileStatus === "private") return ["private", "갤로그 비공개", "비공개"];
+  if (person.exclusion === "게시글 작성자") return ["author", "게시글 작성자", "게시글 작성자"];
+  if (person.profileStatus === "missing" || person.exclusion === "연결할 갤로그가 없는 참가자") return ["missing", "연결할 갤로그 없음", "갤로그 없음"];
+  if (person.exclusion === "작성자 식별 불가") return ["unidentified", "작성자 식별 불가", "식별 불가"];
+  if (person.exclusion === "유동 제외 설정") return ["guest", "유동 제외 설정", "유동"];
+  if (lists.post === "private" || lists.comment === "private") return ["list-private", "목록 비공개로 기준 미달", "목록 비공개·기준 미달"];
+  return ["activity", "활동 기준 미달", "기준 미달"];
+}
+
+// overrides: Map key → { decision: "include" | "exclude", reason, at, automaticAtDecision }.
+// A manual decision applies to any participant and replaces the automatic verdict, which is kept alongside.
+export function applyParticipantSelection(participants, overrides = new Map()) {
   return participants.map((person) => {
-    const manuallyExcluded = person.status === "eligible" && manualExclusions.has(person.key);
-    return { ...person, automaticStatus: person.status, automaticReason: person.reason, manuallyExcluded,
-      included: person.status === "eligible" && !manuallyExcluded,
-      status: manuallyExcluded ? "excluded" : person.status,
-      reason: manuallyExcluded ? "운영자 수동 불포함" : person.reason };
+    const [verdict, , verdictLabel] = verdictCategory({ ...person, automaticStatus: person.status });
+    const entry = overrides.get(person.key);
+    const override = entry && ["include", "exclude"].includes(entry.decision) ? { ...entry } : null;
+    const include = override?.decision === "include";
+    const status = override ? (include ? "eligible" : "excluded") : person.status;
+    return { ...person, automaticStatus: person.status, automaticReason: person.reason, automaticVerdict: verdict, automaticVerdictLabel: verdictLabel,
+      manualOverride: override, manuallyIncluded: include, manuallyExcluded: override?.decision === "exclude",
+      included: status === "eligible", status,
+      reason: override ? (include ? "수동 포함" : "수동 불포함") + " · 원래: " + verdictLabel + (override.reason ? " · 사유: " + override.reason : "") : person.reason };
   });
+}
+
+export function createOverride(person, decision, reason = "", at = Date.now()) {
+  if (!["include", "exclude"].includes(decision)) throw new Error("수동 판정은 포함 또는 불포함만 지정할 수 있습니다.");
+  return { decision, reason: String(reason || "").trim().slice(0, 100), at, automaticAtDecision: verdictCategory({ ...person, automaticStatus: person.automaticStatus || person.status })[0] };
 }
 
 export function collectParticipants(comments, settings, postAuthorKey = "") {
@@ -123,34 +165,43 @@ export function evaluateParticipants(participants, counts, minimum, complete) {
   return participants.map((person) => {
     if (person.exclusion) return { ...person };
     const activity = counts.get(person.key) || { count: 0, latest: 0, url: "" };
-    if (rules.requirePublicGallog && ["private", "missing"].includes(activity.profileStatus)) {
-      const reason = activity.profileError || (activity.profileStatus === "private" ? "갤로그 비공개" : "연결할 갤로그 없음");
-      return { ...person, profileStatus: activity.profileStatus, exclusion: reason, status: "excluded", reason };
+    const lists = activity.listVisibility || {};
+    const listVisibility = { post: lists.post || "", comment: lists.comment || "" };
+    const postPrivate = lists.post === "private";
+    const commentPrivate = lists.comment === "private";
+    if (rules.requirePublicGallog && (["private", "missing"].includes(activity.profileStatus) || (postPrivate && commentPrivate))) {
+      const missing = activity.profileStatus === "missing";
+      const reason = activity.profileError || (missing ? "연결할 갤로그 없음" : postPrivate && commentPrivate ? BOTH_PRIVATE_REASON : "갤로그 비공개");
+      return { ...person, profileStatus: missing ? "missing" : "private", listVisibility, exclusion: reason, status: "excluded", reason };
     }
     if (rules.requirePublicGallog && !isReadableProfile(activity.profileStatus)) {
-      return { ...person, profileStatus: activity.profileStatus || "unknown", status: "pending", reason: activity.profileError || "갤로그 공개 여부 확인 중" };
+      return { ...person, profileStatus: activity.profileStatus || "unknown", listVisibility, status: "pending", reason: activity.profileError || "갤로그 공개 여부 확인 중" };
     }
-    const postsComplete = activity.postsComplete ?? complete;
-    const posts = activity.count || 0;
-    const commentCount = activity.comments || 0;
+    // One private list counts as 0 and is fully known; the verdict uses the visible list only.
+    const note = postPrivate ? "글 목록 비공개 — 댓글 목록만으로 판정" : commentPrivate ? "댓글 목록 비공개 — 글 목록만으로 판정" : "";
+    const withNote = (text) => note ? text + " · " + note : text;
+    const postsComplete = postPrivate || (activity.postsComplete ?? complete);
+    const commentsComplete = commentPrivate || Boolean(activity.commentsComplete);
+    const posts = postPrivate ? 0 : activity.count || 0;
+    const commentCount = commentPrivate ? 0 : activity.comments || 0;
     const postsMet = posts >= minPosts;
     const commentsMet = commentCount >= minComments;
     const total = posts + commentCount;
     const totalMet = total >= minTotal;
     const postsFailed = !postsMet && postsComplete;
-    const commentsFailed = !commentsMet && activity.commentsComplete;
-    const totalFailed = !totalMet && postsComplete && activity.commentsComplete;
+    const commentsFailed = !commentsMet && commentsComplete;
+    const totalFailed = !totalMet && postsComplete && commentsComplete;
     const enough = postsMet && commentsMet && totalMet;
     let reason;
-    if (postsFailed) reason = posts === 0 ? `${period} 작성글 없음` : `작성글 기준 미달 (${posts}/${minPosts}개)`;
-    else if (commentsFailed) reason = commentCount === 0 ? `${period} 작성댓글 없음` : `작성댓글 기준 미달 (${commentCount}/${minComments}개)`;
-    else if (totalFailed) reason = `글+댓글 합계 미달 (${total}/${minTotal}개)`;
-    else if (enough) reason = minPosts || minComments || minTotal ? `활동 기준 충족 (${criteriaLabel(rules)})` : "활동 검사 사용 안 함";
+    if (postsFailed) reason = postPrivate ? `글 목록 비공개로 작성글 기준 미달 (0/${minPosts}개)` : posts === 0 ? `${period} 작성글 없음` : `작성글 기준 미달 (${posts}/${minPosts}개)`;
+    else if (commentsFailed) reason = commentPrivate ? `댓글 목록 비공개로 작성댓글 기준 미달 (0/${minComments}개)` : commentCount === 0 ? `${period} 작성댓글 없음` : `작성댓글 기준 미달 (${commentCount}/${minComments}개)`;
+    else if (totalFailed) reason = withNote(`글+댓글 합계 미달 (${total}/${minTotal}개)`);
+    else if (enough) reason = withNote(minPosts || minComments || minTotal ? `활동 기준 충족 (${criteriaLabel(rules)})` : "활동 검사 사용 안 함");
     else if (activity.commentError && (!commentsMet || !totalMet)) reason = activity.commentError;
     else if (activity.postError && (!postsMet || !totalMet)) reason = activity.postError;
-    else reason = `${period} ${!postsMet ? "작성글" : !commentsMet ? "댓글" : "글+댓글 합계"} 활동 확인 중`;
-    return { ...person, postCount: posts, activityCommentCount: commentCount, totalActivityCount: total, commentsChecked: Boolean(activity.commentsChecked),
-      postsComplete: Boolean(postsComplete), commentsComplete: Boolean(activity.commentsComplete), profileStatus: activity.profileStatus,
+    else reason = withNote(`${period} ${!postsMet ? "작성글" : !commentsMet ? "댓글" : "글+댓글 합계"} 활동 확인 중`);
+    return { ...person, postCount: posts, activityCommentCount: commentCount, totalActivityCount: total, commentsChecked: Boolean(activity.commentsChecked) || commentPrivate,
+      postsComplete: Boolean(postsComplete), commentsComplete, profileStatus: activity.profileStatus, listVisibility,
       lastActivity: activity.latest, evidenceUrl: activity.url,
       status: postsFailed || commentsFailed || totalFailed ? "excluded" : enough ? "eligible" : "pending", reason };
   });
@@ -185,12 +236,24 @@ export function activityWants(settings) {
 }
 
 export function createActivityScan(settings) {
-  const state = () => ({ nextPage: 1, seen: new Set(), fingerprints: new Set(), malformed: false, complete: false, error: "" });
+  const state = () => ({ nextPage: 1, seen: new Set(), fingerprints: new Set(), malformed: false, complete: false, private: false, error: "" });
   return { wants: activityWants(settings), previousKind: "comment", states: { post: state(), comment: state() } };
 }
 
 export function createActivity() {
-  return { count: 0, comments: 0, latest: 0, url: "" };
+  return { count: 0, comments: 0, latest: 0, url: "", listVisibility: { post: "", comment: "" } };
+}
+
+// A private list is complete with 0 records: nothing more to read, nothing to hold for.
+function markListPrivate(scan, activity, kind) {
+  const state = scan.states[kind];
+  Object.assign(state, { private: true, complete: true, nextPage: null, error: "" });
+  activity.listVisibility ||= { post: "", comment: "" };
+  activity.listVisibility[kind] = "private";
+  if (activity.listVisibility.post === "private" && activity.listVisibility.comment === "private") {
+    activity.profileStatus = "private";
+    activity.profileError = BOTH_PRIVATE_REASON;
+  }
 }
 
 export function syncActivityCoverage(scan, activity) {
@@ -208,6 +271,15 @@ export function consumeActivityPages(scan, activity, pages, { post, cutoff, asOf
     const state = scan.states[page.kind];
     if (!state || page.page !== state.nextPage || !Array.isArray(page.entries)
       || (page.nextPage !== null && page.nextPage !== page.page + 1)) throw new Error("갤로그 페이지 정보를 확인할 수 없습니다.");
+    if (page.visibility === "private") {
+      markListPrivate(scan, activity, page.kind);
+      if (scan.wants[page.kind]) consumed[page.kind] += 1;
+      continue;
+    }
+    if (isReadableProfile(page.visibility)) {
+      activity.listVisibility ||= { post: "", comment: "" };
+      if (activity.listVisibility[page.kind] !== "partial") activity.listVisibility[page.kind] = page.visibility;
+    }
     if (!scan.wants[page.kind]) continue;
     consumed[page.kind] += 1;
     if (page.kind === "comment") activity.commentsChecked = true;
@@ -244,13 +316,17 @@ export function consumeActivityPages(scan, activity, pages, { post, cutoff, asOf
   return consumed;
 }
 
-// First response for a participant: both list pages (post, comment) prove the gallog is readable.
+// First response for a participant: both list pages (post, comment) show each list's visibility.
+// One private list is read as 0 records; both private makes the gallog private.
 export function applyAccessResult(scan, activity, access, context) {
   if (isReadableProfile(access.profileStatus) && (!Array.isArray(access.pages) || access.pages.length !== 2
     || access.pages[0].kind !== "post" || access.pages[1].kind !== "comment"
-    || access.pages.some((page) => !isReadableProfile(page.visibility)))) throw new Error("갤로그 글·댓글 공개 여부를 확인할 수 없습니다.");
+    || access.pages.some((page) => !isListVisibility(page.visibility))
+    || access.pages.every((page) => page.visibility === "private"))) throw new Error("갤로그 글·댓글 공개 여부를 확인할 수 없습니다.");
   activity.profileStatus = access.profileStatus;
+  activity.listVisibility ||= { post: "", comment: "" };
   if (!isReadableProfile(access.profileStatus)) {
+    for (const kind of ["post", "comment"]) if (isListVisibility(access.listVisibility?.[kind])) activity.listVisibility[kind] = access.listVisibility[kind];
     activity.profileError = access.unavailableReason || access.error || "갤로그 공개 여부를 확인할 수 없어 보류합니다.";
     return { post: 0, comment: 0 };
   }
@@ -278,6 +354,12 @@ export function nextActivityRequest(scan, activity, settings) {
 
 // action: "stop" (verdict fixed by profile state), "retry" (transient failure; request again from state.nextPage) or "continue".
 export function applyActivityResult(scan, activity, kind, data, context, { canRetry = false } = {}) {
+  // The requested list turned private: it counts as 0 and the other list keeps its verdict.
+  if (data.profileStatus === "private" && data.listVisibility?.[kind] === "private") {
+    markListPrivate(scan, activity, kind);
+    syncActivityCoverage(scan, activity);
+    return { action: activity.profileStatus === "private" ? "stop" : "continue", consumed: { post: 0, comment: 0 } };
+  }
   if (["private", "missing"].includes(data.profileStatus)) {
     activity.profileStatus = data.profileStatus;
     activity.profileError = data.unavailableReason;
@@ -349,22 +431,37 @@ export function retryBackoffMs(attempt, random = Math.random) {
   return Math.min(6000, 1200 * 2 ** Math.max(0, attempt - 1)) + Math.floor(random() * 400);
 }
 
-// Canonical text of the final included roster and the draw settings. Hashing it with SHA-256 gives a
-// fingerprint anyone can recompute from the exported JSON: same roster and settings, same hash,
-// regardless of the order participants were collected or selected in.
+// Canonical text of the final included roster, its per-list gallog visibility, every manual decision and the draw
+// settings. Hashing it with SHA-256 gives a fingerprint anyone can recompute from the exported JSON: same roster,
+// decisions and settings, same hash, regardless of the order participants were collected or selected in.
+export function listVisibilityCode(person, kind) {
+  const value = person.listVisibility?.[kind];
+  return isListVisibility(value) ? value : "not-checked";
+}
+export function overrideRecord(person) {
+  const override = person.manualOverride;
+  if (!override) return null;
+  return { decision: override.decision, reason: override.reason || "", decidedAt: new Date(override.at).toISOString(),
+    automaticAtDecision: override.automaticAtDecision || "", automaticVerdict: person.automaticVerdict || verdictCategory(person)[0] };
+}
 export function rosterCanonical({ post, settings, participants, cutoff, asOf, winnerCount = settings.winnerCount }) {
   const compare = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+  const byIdentity = (a, b) => compare(a[0], b[0]) || compare(a[1], b[1]);
   const roster = participants.filter((person) => person.included ?? person.status === "eligible")
-    .map((person) => [String(person.identityCode || ""), String(person.firstCommentId)])
-    .sort((a, b) => compare(a[0], b[0]) || compare(a[1], b[1]));
+    .map((person) => [String(person.identityCode || ""), String(person.firstCommentId), listVisibilityCode(person, "post"), listVisibilityCode(person, "comment")])
+    .sort(byIdentity);
+  const overrides = participants.filter((person) => person.manualOverride).map((person) => {
+    const record = overrideRecord(person);
+    return [String(person.identityCode || ""), String(person.firstCommentId), record.decision, record.automaticVerdict, record.automaticAtDecision, record.reason, record.decidedAt];
+  }).sort(byIdentity);
   const { minPosts, minComments, minTotal } = activityCriteria(settings);
   const unlimited = settings.periodUnit === "all";
   return JSON.stringify({
-    format: "boogie-roster", version: 1, post: post.url,
+    format: "boogie-roster", version: 2, post: post.url,
     period: { unit: settings.periodUnit, months: unlimited ? null : settings.periodValue,
       from: unlimited ? null : new Date(cutoff).toISOString(), through: new Date(asOf).toISOString() },
-    criteria: { mode: settings.activityMode, minPosts, minComments, minTotal },
-    winnerCount, roster,
+    criteria: { mode: settings.activityMode, minPosts, minComments, minTotal, privateList: "visible-only" },
+    winnerCount, roster, overrides,
   });
 }
 
@@ -378,5 +475,6 @@ export function shortFingerprint(hash) {
   return hash ? hash.slice(0, 12).match(/.{4}/g).join("-") : "";
 }
 
-export const ROSTER_VERIFY_NOTE = "포함(included: true) 참가자의 [identityCode, entryCommentId] 목록을 정렬한 값이 canonical의 roster와 같은지 확인한 뒤, "
-  + "canonical 문자열을 UTF-8 그대로 SHA-256으로 계산하면 sha256 값과 같아야 합니다.";
+export const ROSTER_VERIFY_NOTE = "포함(included: true) 참가자의 [identityCode, entryCommentId, listVisibility.post, listVisibility.comment] 목록을 정렬한 값이 canonical의 roster와, "
+  + "manualOverride가 있는 참가자의 [identityCode, entryCommentId, decision, automaticVerdict, automaticAtDecision, reason, decidedAt] 목록을 정렬한 값이 canonical의 overrides와 같은지 확인합니다. "
+  + "목록 공개 상태가 없으면 not-checked입니다. 그다음 canonical 문자열을 UTF-8 그대로 SHA-256으로 계산하면 sha256 값과 같아야 합니다.";

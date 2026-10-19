@@ -47,8 +47,10 @@ test("명단 해시는 수집·선택 순서와 무관하고 명단·설정이 �
   const canonical = rosterCanonical({ post, settings, participants: people, cutoff, asOf });
   assert.equal(canonical, rosterCanonical({ post, settings, participants: [...people].reverse(), cutoff, asOf }));
   const parsed = JSON.parse(canonical);
-  assert.deepEqual(parsed.roster, [["alpha", "7"], ["beta", "12"]]);
-  assert.deepEqual(parsed.criteria, { mode: "separate", minPosts: 3, minComments: 0, minTotal: 0 }, "Only the active mode's thresholds count");
+  assert.deepEqual(parsed.roster, [["alpha", "7", "not-checked", "not-checked"], ["beta", "12", "not-checked", "not-checked"]]);
+  assert.deepEqual(parsed.overrides, []);
+  assert.equal(parsed.version, 2);
+  assert.deepEqual(parsed.criteria, { mode: "separate", minPosts: 3, minComments: 0, minTotal: 0, privateList: "visible-only" }, "Only the active mode's thresholds count");
   assert.equal(parsed.period.from, "2026-04-14T15:00:00.000Z");
   const hash = await sha256Hex(canonical, webcrypto.subtle);
   assert.equal(hash, createHash("sha256").update(canonical, "utf8").digest("hex"));
