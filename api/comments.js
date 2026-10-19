@@ -1,5 +1,5 @@
 import { parsePostInput, parsePostUrl } from "../public/lottery-core.js";
-import { requestBody, respond, attr, decode, text, writerIdentity, authorHash, dcFetch, delay } from "../lib/dcinside.js";
+import { requestBody, respond, attr, decode, text, writerIdentity, authorHash, dcFetch, bodyText, pause, createBudget, errorResponse, UpstreamError } from "../lib/dcinside.js";
 
 function input(html, name) {
   const tag = html.match(new RegExp("<input\\b[^>]*(?:id|name)=[\"']" + name + "[\"'][^>]*>", "i"))?.[0] || "";
@@ -26,15 +26,15 @@ export function nextPage(pagination, page) {
   return [...values, ...dataValues].some((value) => value > page) ? page + 1 : null;
 }
 
-export async function loadCommentSource(gallery, sessionKey) {
+export async function loadCommentSource(gallery, sessionKey, { budget } = {}) {
   const original = gallery;
   const visited = new Set();
   let detail, html, title, token;
   for (let hop = 0; hop < 3; hop += 1) {
     if (visited.has(gallery.url)) throw new Error("게시글 주소 이동이 반복되어 읽을 수 없습니다.");
     visited.add(gallery.url);
-    detail = await dcFetch(gallery.url, { allowRedirect: true });
-    html = await detail.text();
+    detail = await dcFetch(gallery.url, { allowRedirect: true, budget });
+    html = await bodyText(detail);
     title = text(html.match(/<span\b[^>]*class=["'][^"']*\btitle_subject\b[^"']*["'][^>]*>([\s\S]*?)<\/span>/i)?.[1], 200);
     token = input(html, "e_s_n_o");
     if (detail.ok && title && token) break;
@@ -56,49 +56,60 @@ export async function loadCommentSource(gallery, sessionKey) {
   const ip = decode(attr(writerTag, "data-ip")).trim();
   const post = { ...gallery, title, authorKey: authorHash(writerIdentity(uid, ip, name), gallery, sessionKey) };
   const cookie = detail.headers.getSetCookie().map((value) => value.split(";")[0]).join("; ");
-  return { gallery, html, token, cookie, post };
+  const form = { board_type: input(html, "board_type"), _GALLTYPE_: input(html, "_GALLTYPE_"), secret_article_key: input(html, "secret_article_key") };
+  return { gallery, token, form, cookie, post };
 }
 
-export async function readCommentPage(source, page) {
-  const { gallery, html, token, cookie } = source;
+export async function readCommentPage(source, page, { budget } = {}) {
+  const { gallery, token, form: fields, cookie } = source;
   const form = new URLSearchParams({ id: gallery.id, no: gallery.no, cmt_id: gallery.id, cmt_no: gallery.no,
-    e_s_n_o: token, comment_page: String(page), sort: "N", prevCnt: "", board_type: input(html, "board_type"),
-    _GALLTYPE_: input(html, "_GALLTYPE_"), focus_cno: "", focus_pno: "", secret_article_key: input(html, "secret_article_key"), clean: "", nptest: "" });
-  const response = await dcFetch("https://gall.dcinside.com/board/comment/", { method: "POST", headers: {
+    e_s_n_o: token, comment_page: String(page), sort: "N", prevCnt: "", board_type: fields.board_type,
+    _GALLTYPE_: fields._GALLTYPE_, focus_cno: "", focus_pno: "", secret_article_key: fields.secret_article_key, clean: "", nptest: "" });
+  const response = await dcFetch("https://gall.dcinside.com/board/comment/", { method: "POST", budget, headers: {
     Accept: "application/json, text/javascript, */*; q=0.01", "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
     "X-Requested-With": "XMLHttpRequest", Referer: gallery.url, Origin: "https://gall.dcinside.com", Cookie: cookie,
   }, body: form.toString() });
+  const raw = await bodyText(response);
   let data;
-  try { data = await response.json(); } catch { throw new Error("댓글 응답을 읽지 못했습니다. 잠시 뒤 다시 시도해주세요."); }
+  try { data = JSON.parse(raw); } catch { throw new UpstreamError("댓글 응답을 읽지 못했습니다. 잠시 뒤 다시 시도해주세요.", "upstream_format", { retryable: true }); }
   if (data.comments === null && Number(data.total_cnt) === 0) data.comments = [];
   if (!Array.isArray(data.comments)) throw new Error("댓글 응답 형식이 달라 수집을 중단했습니다.");
   const next = nextPage(data.pagination, page);
+  // Page 1 without paging links must hold every counted comment; otherwise pages exist we cannot reach.
   if (page === 1 && !next && Number(data.total_cnt) > data.comments.filter((item) => /^[1-9]\d*$/.test(String(item.no || ""))).length) {
     throw new Error("전체 댓글의 페이지 정보를 확인할 수 없어 추첨을 보류합니다.");
   }
   return { ...data, nextPage: next };
 }
 
-export default async function handler(req, res) {
+export default async function handler(req, res, options = {}) {
   const body = requestBody(req, res);
   if (!body) return;
   let gallery;
-  try { gallery = parsePostInput(body.postUrl); } catch (error) { respond(res, 400, { error: error.message }); return; }
+  try { gallery = parsePostInput(body.postUrl); } catch (error) { respond(res, 400, { error: error.message, errorKind: "bad_request" }); return; }
   const startPage = Number(body.startPage || 1);
   const count = Number(body.count || 1);
-  if (!Number.isInteger(startPage) || startPage < 1 || startPage > 100 || !Number.isInteger(count) || count < 1 || count > 3 || startPage + count - 1 > 100) { respond(res, 400, { error: "댓글은 한 번에 3페이지, 최대 100페이지까지 조회할 수 있습니다." }); return; }
+  if (!Number.isInteger(startPage) || startPage < 1 || startPage > 100 || !Number.isInteger(count) || count < 1 || count > 3 || startPage + count - 1 > 100) { respond(res, 400, { error: "댓글은 한 번에 3페이지, 최대 100페이지까지 조회할 수 있습니다.", errorKind: "bad_request" }); return; }
+  const budget = options.budget || createBudget();
+  const pauseMs = options.pauseMs ?? 300;
+  const pages = [];
+  let source;
   try {
-    const source = await loadCommentSource(gallery, body.sessionKey);
-    const pages = [];
+    source = await loadCommentSource(gallery, body.sessionKey, { budget });
     for (let offset = 0; offset < count; offset += 1) {
       const page = startPage + offset;
-      const data = await readCommentPage(source, page);
+      const data = await readCommentPage(source, page, { budget });
       const comments = parseComments(data, source.gallery, body.sessionKey);
       const next = data.nextPage;
       pages.push({ page, comments, nextPage: next, totalCount: Number(data.total_cnt) || 0 });
       if (!next) break;
-      if (offset + 1 < count) await delay(300);
+      if (offset + 1 < count) await pause(pauseMs, budget);
     }
     respond(res, 200, { post: source.post, pages });
-  } catch (error) { respond(res, 502, { error: error.name === "TimeoutError" ? "댓글 응답 시간이 초과되었습니다." : error.message }); }
+  } catch (error) {
+    // Pages already read stay valid; the browser continues from the last page's nextPage.
+    if (error?.kind === "time_budget" && pages.length) { respond(res, 200, { post: source.post, pages, partial: true }); return; }
+    const failure = errorResponse(error, "댓글 응답 시간이 초과되었습니다.");
+    respond(res, failure.status, failure.body, failure.headers);
+  }
 }

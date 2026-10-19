@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { parsePostUrl } from "../public/lottery-core.js";
 import { loadCommentSource, readCommentPage, parseComments } from "./comments.js";
-import { requestBody, respond, attr, decode, text, gallogFetch, delay } from "../lib/dcinside.js";
+import { requestBody, respond, attr, decode, text, gallogFetch, bodyText, pause, createBudget, errorResponse } from "../lib/dcinside.js";
 
 const MAX_PROFILE_PAGES = 2000;
 const PATHS = { post: "posting", comment: "comment" };
@@ -67,10 +67,12 @@ export function parseProfileActivity(html, gallery, kind, page, cutoff, asOf) {
   return result;
 }
 
-async function resolveParticipant(gallery, body) {
-  const source = await loadCommentSource(gallery, body.sessionKey);
-  const data = await readCommentPage(source, Number(body.sourcePage));
-  const validIds = new Set(parseComments(data, gallery, body.sessionKey).filter((item) => item.authorKey === body.authorKey).map((item) => item.id));
+// The browser sends only the HMAC author key and the comment page. The server re-reads that
+// comment to find the gallog ID, so this endpoint cannot be used to scan arbitrary gallogs.
+async function resolveParticipant(context, target) {
+  context.source ||= await loadCommentSource(context.gallery, context.sessionKey, { budget: context.budget });
+  const data = await readCommentPage(context.source, target.sourcePage, { budget: context.budget });
+  const validIds = new Set(parseComments(data, context.source.gallery, context.sessionKey).filter((item) => item.authorKey === target.authorKey).map((item) => item.id));
   const raw = data.comments.find((item) => validIds.has(String(item.no)));
   if (!raw) return { profileStatus: "unknown", unavailableReason: "참여 댓글의 작성자를 다시 확인할 수 없어 보류합니다." };
   const uid = String(raw.user_id || raw.uid || "").trim();
@@ -79,49 +81,95 @@ async function resolveParticipant(gallery, body) {
   return { uid };
 }
 
-export default async function handler(req, res) {
+async function checkTarget(context, target, pages) {
+  const participant = await resolveParticipant(context, target);
+  if (!participant.uid) return { ...participant, pages };
+  const requests = context.accessOnly ? [{ kind: "post", page: 1 }, { kind: "comment", page: 1 }]
+    : Array.from({ length: target.count }, (_, offset) => ({ kind: target.kind, page: target.startPage + offset }));
+  for (let index = 0; index < requests.length; index += 1) {
+    const request = requests[index];
+    const url = new URL(`https://gallog.dcinside.com/${encodeURIComponent(participant.uid)}/${PATHS[request.kind]}`);
+    if (request.page > 1) url.searchParams.set("p", String(request.page));
+    let html;
+    try {
+      if (index > 0) await pause(context.pauseMs, context.budget);
+      html = await bodyText(await gallogFetch(url, { budget: context.budget }));
+    } catch (error) {
+      // Out of time after some pages: return them; their nextPage is the continuation marker.
+      if (error?.kind === "time_budget" && pages.length && !context.accessOnly) break;
+      throw error;
+    }
+    const result = parseProfileActivity(html, context.gallery, request.kind, request.page, context.cutoff, context.asOf);
+    pages.push(result);
+    if (result.visibility === "private") return { profileStatus: "private", unavailableReason: result.unavailableReason, pages: [] };
+    if (result.visibility === "unknown") return { profileStatus: "unknown", unavailableReason: result.unavailableReason, pages: [] };
+    if (!context.accessOnly && (result.unavailableReason || result.boundary || !result.nextPage)) break;
+  }
+  return { profileStatus: pages.some((page) => page.visibility === "partial") ? "partial" : "public", pages };
+}
+
+function validTarget(target, accessOnly) {
+  const sourcePage = Number(target.sourcePage);
+  const startPage = Number(target.startPage || 1);
+  const count = Number(target.count || 1);
+  const kind = target.kind || "comment";
+  if (!/^[0-9a-f]{64}$/i.test(String(target.authorKey || "")) || !Number.isInteger(sourcePage) || sourcePage < 1 || sourcePage > 100
+    || !Number.isInteger(startPage) || startPage < 1 || !Number.isInteger(count) || count < 1 || count > 3 || startPage + count - 1 > MAX_PROFILE_PAGES
+    || !Object.hasOwn(PATHS, kind)) return null;
+  return { authorKey: String(target.authorKey), sourcePage, startPage: accessOnly ? 1 : startPage, count: accessOnly ? 1 : count, kind };
+}
+
+export default async function handler(req, res, options = {}) {
   const body = requestBody(req, res);
   if (!body) return;
   let gallery;
-  try { gallery = parsePostUrl(body.postUrl); } catch (error) { respond(res, 400, { error: error.message }); return; }
-  const sourcePage = Number(body.sourcePage);
-  const startPage = Number(body.startPage || 1);
-  const count = Number(body.count || 1);
+  try { gallery = parsePostUrl(body.postUrl); } catch (error) { respond(res, 400, { error: error.message, errorKind: "bad_request" }); return; }
   const cutoff = Number(body.cutoff);
   const asOf = Number(body.asOf);
   const periodUnit = body.periodUnit || "months";
   const validPeriod = periodUnit === "all" ? cutoff === 0
     : periodUnit === "months" && cutoff > 0 && asOf - cutoff <= 732 * 86400000;
   const accessOnly = body.action === "access";
-  const kind = body.kind || "comment";
-  if (!/^[0-9a-f]{64}$/i.test(String(body.authorKey || "")) || !Number.isInteger(sourcePage) || sourcePage < 1 || sourcePage > 100
-    || !Number.isInteger(startPage) || startPage < 1 || !Number.isInteger(count) || count < 1 || count > 3 || startPage + count - 1 > MAX_PROFILE_PAGES
-    || !Object.hasOwn(PATHS, kind) || !Number.isSafeInteger(cutoff) || !Number.isSafeInteger(asOf) || !validPeriod || cutoff > asOf
+  const batch = Array.isArray(body.targets);
+  const targets = (batch ? body.targets : [body]).map((target) => target && typeof target === "object" ? validTarget(target, accessOnly) : null);
+  if (!targets.length || targets.length > 5 || targets.some((target) => !target)
+    || !Number.isSafeInteger(cutoff) || !Number.isSafeInteger(asOf) || !validPeriod || cutoff > asOf
     || asOf <= 0 || asOf > Date.now() + 60000 || (body.action && !accessOnly)) {
-    respond(res, 400, { error: "갤로그 조회 대상·기간·페이지가 올바르지 않습니다." }); return;
+    respond(res, 400, { error: "갤로그 조회 대상·기간·페이지가 올바르지 않습니다.", errorKind: "bad_request" }); return;
   }
-  const pages = [];
-  try {
-    const participant = await resolveParticipant(gallery, body);
-    if (!participant.uid) { respond(res, 200, { ...participant, pages }); return; }
-    const requests = accessOnly ? [{ kind: "post", page: 1 }, { kind: "comment", page: 1 }]
-      : Array.from({ length: count }, (_, offset) => ({ kind, page: startPage + offset }));
-    for (let index = 0; index < requests.length; index += 1) {
-      const request = requests[index];
-      const url = new URL(`https://gallog.dcinside.com/${encodeURIComponent(participant.uid)}/${PATHS[request.kind]}`);
-      if (request.page > 1) url.searchParams.set("p", String(request.page));
-      const html = await (await gallogFetch(url)).text();
-      const result = parseProfileActivity(html, gallery, request.kind, request.page, cutoff, asOf);
-      pages.push(result);
-      if (result.visibility === "private") { respond(res, 200, { profileStatus: "private", unavailableReason: result.unavailableReason, pages: [] }); return; }
-      if (result.visibility === "unknown") { respond(res, 200, { profileStatus: "unknown", unavailableReason: result.unavailableReason, pages: [] }); return; }
-      if (!accessOnly && (result.unavailableReason || result.boundary || !result.nextPage)) break;
-      if (index + 1 < requests.length) await delay(300);
+  const context = { gallery, sessionKey: body.sessionKey, cutoff, asOf, accessOnly, source: null,
+    budget: options.budget || createBudget(), pauseMs: options.pauseMs ?? 300 };
+  if (!batch) {
+    // Single-participant form kept for open tabs from the previous release.
+    const pages = [];
+    try { respond(res, 200, await checkTarget(context, targets[0], pages)); }
+    catch (error) {
+      const failure = errorResponse(error, "갤로그 응답 시간이 초과되었습니다.");
+      if (error?.kind === "time_budget" || error?.kind === "upstream_blocked") { respond(res, failure.status, failure.body, failure.headers); return; }
+      // Never infer a private profile from an HTTP error or reveal a raw UID in an error.
+      respond(res, pages.length && !accessOnly ? 200 : 502, { profileStatus: "unknown", pages: accessOnly ? [] : pages,
+        error: failure.body.errorKind === "upstream_timeout" ? "갤로그 응답 시간이 초과되었습니다." : "갤로그 접근 오류로 확인을 보류합니다.",
+        errorKind: failure.body.errorKind, retryable: failure.body.retryable });
     }
-    respond(res, 200, { profileStatus: pages.some((page) => page.visibility === "partial") ? "partial" : "public", pages });
-  } catch (error) {
-    // Never infer a private profile from an HTTP error or reveal a raw UID in an error.
-    respond(res, pages.length && !accessOnly ? 200 : 502, { profileStatus: "unknown", pages: accessOnly ? [] : pages,
-      error: error.name === "TimeoutError" ? "갤로그 응답 시간이 초과되었습니다." : "갤로그 접근 오류로 확인을 보류합니다." });
+    return;
   }
+  const results = [];
+  const deferred = [];
+  let blocked = null;
+  for (const target of targets) {
+    if (blocked || deferred.length) { deferred.push(target.authorKey); continue; }
+    const pages = [];
+    try {
+      if (results.length) await pause(context.pauseMs, context.budget);
+      results.push({ authorKey: target.authorKey, ...(await checkTarget(context, target, pages)) });
+    } catch (error) {
+      const failure = errorResponse(error, "갤로그 응답 시간이 초과되었습니다.");
+      if (error?.kind === "time_budget") { deferred.push(target.authorKey); continue; }
+      if (error?.kind === "upstream_blocked") { blocked = { error: failure.body.error, retryAfter: failure.body.retryAfter || 60 }; deferred.push(target.authorKey); continue; }
+      results.push({ authorKey: target.authorKey, profileStatus: "unknown", pages: accessOnly ? [] : pages,
+        error: failure.body.errorKind === "upstream_timeout" ? "갤로그 응답 시간이 초과되었습니다." : failure.body.errorKind === "upstream_format" && !failure.body.retryable ? failure.body.error : "갤로그 접근 오류로 확인을 보류합니다.",
+        errorKind: failure.body.errorKind, retryable: failure.body.retryable });
+    }
+  }
+  respond(res, 200, { results, deferred, ...(blocked ? { blocked } : {}) });
 }

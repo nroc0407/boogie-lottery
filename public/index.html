@@ -78,7 +78,7 @@
             <details id="pending-group" class="preview-group pending-group" open hidden><summary><h3 id="pending-title">미확인 <span id="pending-count">0명</span></h3></summary><ul id="pending-list" class="preview-list"></ul><p id="pending-empty" class="preview-empty">검색 결과가 없습니다.</p></details>
           </div>
           <p class="preview-rule">항목 제목을 누르면 명단을 펼치거나 접습니다. 닉네임 뒤 괄호는 계정의 공개 식별코드입니다. 비공개·기준 미달 참가자는 포함할 수 없습니다. 추첨 후에는 명단이 고정됩니다.</p>
-          <div class="preview-confirm"><p id="review-message" role="status" aria-live="polite">참가자를 확인하고 있습니다.</p><button id="draw-button" class="primary-button" type="button" disabled>포함 대상 추첨하기</button></div>
+          <div class="preview-confirm"><p id="review-message" role="status" aria-live="polite">참가자를 확인하고 있습니다.</p><div class="confirm-actions"><button id="recheck-button" type="button" hidden>미확인만 다시 확인</button><button id="draw-button" class="primary-button" type="button" disabled>포함 대상 추첨하기</button></div></div>
         </fieldset>
         <fieldset id="winner-section" class="winner-section" hidden aria-live="polite"><legend>당첨자</legend><div id="winner-list" class="winner-list"></div><p id="draw-detail"></p></fieldset>
         <details class="participants-panel">

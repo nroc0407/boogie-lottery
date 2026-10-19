@@ -1,18 +1,29 @@
-import { parsePostInput, parsePostUrl, evaluationCutoff, periodLabel, criteriaLabel, participantLabel, isReadableProfile, applyParticipantSelection, collectParticipants, evaluateParticipants, pickWinners } from "/lottery-core.js";
+import { parsePostInput, evaluationCutoff, periodLabel, criteriaLabel, participantLabel, isReadableProfile, applyParticipantSelection, collectParticipants, evaluateParticipants, pickWinners,
+  createActivity, createActivityScan, applyAccessResult, nextActivityRequest, applyActivityResult, recordActivityFailure, classifyApiFailure, retryBackoffMs } from "/lottery-core.js";
 import { createRecord, jsonBlob, pngBlob, zipBlob, exportBaseName, downloadBlob } from "/result-export.js";
 
 const $ = (id) => document.getElementById(id);
-const MAX_PAGES = 2000;
+const API_ATTEMPTS = 3;
+const RATE_LIMIT_WAITS = 3;
+const ACCESS_BATCH = 4;
+const TARGET_RETRIES = 2;
+const MAX_DEFERRALS = 5;
 let controller = null;
 let post = null;
 let comments = [];
 let participants = [];
+let participantIndex = new Map();
 let counts = new Map();
+let scans = new Map();
+let sourcePages = new Map();
+let profileChecked = new Set();
 let scanPages = 0;
 let commentScanPages = 0;
-let profileScanCount = 0;
 let nextRequestAt = 0;
 let completed = false;
+let commentsCollected = false;
+let sessionKey = "";
+let blockedPauses = 0;
 let drawn = null;
 let draws = [];
 let progressHistory = [];
@@ -23,6 +34,7 @@ let previousPreviewQuery = "";
 let settings = null;
 let asOf = 0;
 let cutoff = 0;
+let clockStart = 0;
 let phase = "idle";
 let statusTone = "idle";
 let elapsedSeconds = 0;
@@ -33,7 +45,7 @@ function date(value) { return value ? new Date(value).toLocaleDateString("ko-KR"
 function assessmentRange() { return settings.periodUnit === "all" ? "기간 제한 없음 · " + date(asOf) + "까지" : date(cutoff) + " ~ " + date(asOf); }
 function clock(seconds) { return String(Math.floor(seconds / 60)).padStart(2, "0") + ":" + String(seconds % 60).padStart(2, "0"); }
 function updateElapsed() {
-  if (controller) elapsedSeconds = Math.max(0, Math.floor((Date.now() - asOf) / 1000));
+  if (controller) elapsedSeconds = Math.max(0, Math.floor((Date.now() - clockStart) / 1000));
   $("elapsed-time").textContent = clock(elapsedSeconds);
 }
 function appendLog(message, tone = "info", detail = "") {
@@ -47,7 +59,7 @@ function appendLog(message, tone = "info", detail = "") {
   row.className = "log-" + tone;
   const time = document.createElement("span");
   time.className = "log-time";
-  time.textContent = clock(asOf ? Math.max(0, Math.floor((Date.now() - asOf) / 1000)) : 0);
+  time.textContent = clock(clockStart ? Math.max(0, Math.floor((Date.now() - clockStart) / 1000)) : 0);
   progressHistory.push({ elapsed: time.textContent, tone, message, detail });
   if (progressHistory.length > 120) progressHistory.shift();
   const content = document.createElement("span");
@@ -67,7 +79,7 @@ function appendLog(message, tone = "info", detail = "") {
 }
 function renderProgress() {
   updateElapsed();
-  $("coverage-detail").textContent = "갤로그 " + number(profileScanCount) + "명 / 글 " + number(scanPages) + "p / 댓글 " + number(commentScanPages) + "p";
+  $("coverage-detail").textContent = "갤로그 " + number(profileChecked.size) + "명 / 글 " + number(scanPages) + "p / 댓글 " + number(commentScanPages) + "p";
   $("coverage-state").textContent = drawn ? "완료" : statusTone === "stopped" ? "중단"
     : statusTone === "error" ? (completed || participants.some((person) => person.status === "pending") ? "보류" : "오류")
     : controller ? "처리 중" : completed ? "추첨 대기" : "대기";
@@ -129,19 +141,75 @@ async function wait(ms, signal) {
     signal.addEventListener("abort", onAbort, { once: true });
   });
 }
+async function countdown(ms, message, signal) {
+  status(message, "loading", Math.ceil(ms / 1000) + "초 대기");
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    await wait(Math.min(1000, until - Date.now()), signal);
+    $("status-pages").textContent = Math.max(0, Math.ceil((until - Date.now()) / 1000)) + "초 대기";
+  }
+}
+function fatalError(message, kind) {
+  const error = new Error(message);
+  error.fatal = true;
+  error.kind = kind;
+  return error;
+}
+function isFatal(error) { return error?.name === "AbortError" || Boolean(error?.fatal); }
+// DC blocking: wait once for the server's hint, then stop instead of sending more requests.
+async function handleBlocked(retryAfterMs, signal) {
+  if (blockedPauses >= 1) {
+    throw fatalError("디시인사이드가 요청을 계속 제한하고 있어 확인을 멈췄습니다. 몇 분 뒤 "
+      + (commentsCollected ? "‘미확인만 다시 확인’을 눌러주세요." : "다시 시도해주세요."), "upstream_blocked");
+  }
+  blockedPauses += 1;
+  await countdown(Math.min(120_000, Math.max(5_000, retryAfterMs || 60_000)), "디시인사이드 요청 제한 감지 / 잠시 쉬었다가 한 번 다시 시도합니다", signal);
+}
 async function api(path, body, signal) {
-  await wait(Math.max(0, nextRequestAt - Date.now()), signal);
-  const response = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body), cache: "no-store", signal });
-  nextRequestAt = Date.now() + 1100;
-  let result;
-  try { result = await response.json(); } catch { throw new Error("서버 응답을 읽을 수 없습니다."); }
-  if (!response.ok) {
-    const error = new Error(result.error || ("요청 실패 (HTTP " + response.status + ")"));
-    error.status = response.status;
+  let attempt = 0;
+  let rateWaits = 0;
+  for (;;) {
+    attempt += 1;
+    await wait(Math.max(0, nextRequestAt - Date.now()), signal);
+    let response = null;
+    let result = null;
+    let failure = null;
+    try {
+      response = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body), cache: "no-store", signal });
+    } catch (error) {
+      if (error.name === "AbortError") throw error;
+      failure = classifyApiFailure({ networkError: true });
+    }
+    nextRequestAt = Date.now() + 1100;
+    if (response) {
+      try { result = await response.json(); }
+      catch (error) {
+        if (error.name === "AbortError") throw error;
+        failure = classifyApiFailure({ status: response.status, parseError: true });
+      }
+      if (!failure && response.ok) return result;
+      failure ||= classifyApiFailure({ status: response.status, body: result, retryAfter: response.headers.get("Retry-After") || "" });
+    }
+    if (failure.kind === "rate_limit") {
+      if (rateWaits >= RATE_LIMIT_WAITS) throw fatalError("요청이 많아 확인을 멈췄습니다. 1분 정도 뒤 "
+        + (commentsCollected ? "‘미확인만 다시 확인’을 눌러주세요." : "다시 시도해주세요."), "rate_limit");
+      rateWaits += 1;
+      attempt -= 1;
+      await countdown(Math.min(65_000, failure.retryAfterMs), "요청 제한 / 서버가 안내한 시간만큼 기다린 뒤 이어서 확인합니다", signal);
+      continue;
+    }
+    if (failure.kind === "upstream_blocked") { await handleBlocked(failure.retryAfterMs, signal); attempt -= 1; continue; }
+    if (failure.retryable && attempt < API_ATTEMPTS) {
+      appendLog("일시 오류 / " + (attempt + 1) + "번째 시도", "info", failure.message);
+      await wait(failure.kind === "time_budget" ? 0 : retryBackoffMs(attempt), signal);
+      continue;
+    }
+    const error = new Error(failure.message);
+    error.status = response?.status || 0;
+    error.kind = failure.kind;
     throw error;
   }
-  return result;
 }
 function settingsFromForm() {
   const target = parsePostInput($("post-url").value);
@@ -162,20 +230,55 @@ function settingsFromForm() {
   return { ...target, requirePublicGallog: true, activityMode, minPosts, minComments, minTotal, periodValue, periodUnit, winnerCount, includeGuests: false,
     includeReplies: $("include-replies").checked, excludeAuthor: $("exclude-author").checked, keyword: $("keyword").value.trim() };
 }
+function setParticipants(list) {
+  participants = list;
+  participantIndex = new Map(list.map((person, index) => [person.key, index]));
+}
+function beginRun() {
+  controller = new AbortController();
+  blockedPauses = 0;
+  clockStart = Date.now();
+  elapsedSeconds = 0;
+  statusTone = "loading";
+  setRunning(true);
+  return controller.signal;
+}
+function endRun() {
+  updateElapsed();
+  controller = null;
+  if (completed && !drawn) setPhase("review");
+  setRunning(false);
+  render();
+}
+function reportRunError(error) {
+  status(error.name === "AbortError" ? "중단됨 / 추첨 미실행" : error.message, error.name === "AbortError" ? "stopped" : "error");
+}
+function finishActivity() {
+  completed = true;
+  setPhase("review");
+  render();
+  const pending = participants.filter((person) => person.status === "pending").length;
+  if (pending) throw new Error("미확인 " + number(pending) + "명 / 추첨 보류 · ‘미확인만 다시 확인’으로 이어서 확인할 수 있습니다.");
+  status("참가자 확인 완료 / 명단을 검토한 뒤 추첨해주세요.", "success", "통과 " + participants.filter((person) => person.status === "eligible").length + "명");
+}
 async function run(event) {
   event.preventDefault();
   if (controller || exportBusy) return;
   let input;
   try { input = settingsFromForm(); } catch (error) { status(error.message, "error"); return; }
+  if (drawn && !window.confirm("현재 명단과 당첨 결과를 지우고 참가자를 새로 확인합니다. 추첨 기록은 이 탭에 남습니다. 계속할까요?")) return;
   settings = input;
   post = input;
   comments = [];
-  participants = [];
+  setParticipants([]);
   counts = new Map();
+  scans = new Map();
+  sourcePages = new Map();
+  profileChecked = new Set();
   scanPages = 0;
   commentScanPages = 0;
-  profileScanCount = 0;
   completed = false;
+  commentsCollected = false;
   drawn = null;
   draws = [];
   progressHistory = [];
@@ -183,17 +286,13 @@ async function run(event) {
   $("participant-search").value = "";
   $("export-feedback").textContent = "";
   asOf = Date.now();
-  elapsedSeconds = 0;
   lastLog = "";
-  statusTone = "loading";
   $("progress-log").replaceChildren();
   cutoff = evaluationCutoff(asOf, settings.periodValue, settings.periodUnit);
-  const sessionKey = [...crypto.getRandomValues(new Uint8Array(32))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-  controller = new AbortController();
-  const signal = controller.signal;
+  sessionKey = [...crypto.getRandomValues(new Uint8Array(32))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  const signal = beginRun();
   $("welcome").hidden = true;
   $("results").hidden = false;
-  setRunning(true);
   setPhase("comments");
   appendLog(periodLabel(settings) + " / " + criteriaLabel(settings));
   render();
@@ -214,170 +313,172 @@ async function run(event) {
         }
         nextCommentPage = page.nextPage;
       }
-      participants = collectParticipants(comments, settings, post.authorKey);
+      setParticipants(collectParticipants(comments, settings, post.authorKey));
       appendLog("댓글 " + number(comments.length) + "개 / 참가 " + number(participants.length) + "명", "info", data.pages.at(-1).page + "p 확인");
       render();
       if (nextCommentPage) await wait(350, signal);
     }
     if (!comments.length) throw new Error("이 게시글에는 수집 가능한 댓글이 없습니다.");
     if (!participants.length) throw new Error("댓글 포함 조건에 맞는 참가자가 없습니다.");
+    commentsCollected = true;
     setPhase("activity");
     const checkable = participants.filter((person) => !person.exclusion);
     if (!checkable.length) {
-      participants = evaluateParticipants(participants, counts, settings, true);
+      setParticipants(evaluateParticipants(participants, counts, settings, true));
       completed = true;
       throw new Error("참가 조건을 통과한 댓글 작성자가 없습니다. 대댓글·키워드 설정을 확인해주세요.");
     }
-    await scanProfileActivity(sessionKey, signal, checkable);
-    refreshParticipants();
-    completed = true;
-    setPhase("review");
-    render();
-    if (participants.some((person) => person.status === "pending")) {
-      throw new Error("미확인 " + participants.filter((person) => person.status === "pending").length + "명 / 추첨 보류");
-    }
-    status("참가자 확인 완료 / 명단을 검토한 뒤 추첨해주세요.", "success", "통과 " + participants.filter((person) => person.status === "eligible").length + "명");
+    setParticipants(evaluateParticipants(participants, counts, settings, false));
+    await scanProfileActivity(signal, checkable);
+    finishActivity();
   } catch (error) {
-    status(error.name === "AbortError" ? "중단됨 / 추첨 미실행" : error.message,
-      error.name === "AbortError" ? "stopped" : "error");
+    reportRunError(error);
   } finally {
-    updateElapsed();
-    controller = null;
-    if (completed && !drawn) setPhase("review");
-    setRunning(false);
-    render();
+    endRun();
+  }
+}
+// Re-checks only unverified participants with the same session, period and settings; verified results stay.
+async function recheckPending() {
+  if (controller || exportBusy || drawn || !commentsCollected) return;
+  if (!reviewState().matches) { status("설정이 바뀌어 다시 확인할 수 없습니다. 참가자 확인을 새로 실행해주세요.", "error"); return; }
+  const targets = participants.filter((person) => person.status === "pending" && !person.exclusion);
+  if (!targets.length) return;
+  for (const person of targets) {
+    counts.delete(person.key);
+    scans.delete(person.key);
+    profileChecked.delete(person.key);
+    const index = participantIndex.get(person.key);
+    participants[index] = evaluateParticipants([participants[index]], counts, settings, false)[0];
+  }
+  const signal = beginRun();
+  setPhase("activity");
+  appendLog("미확인 " + number(targets.length) + "명만 다시 확인", "info", "확인된 결과는 유지");
+  render();
+  try {
+    await scanProfileActivity(signal, targets);
+    finishActivity();
+  } catch (error) {
+    reportRunError(error);
+  } finally {
+    endRun();
   }
 }
 
-function refreshParticipants() {
-  participants = evaluateParticipants(participants, counts, settings, false);
+function refreshParticipant(key) {
+  const index = participantIndex.get(key);
+  if (index === undefined) return;
+  participants[index] = evaluateParticipants([participants[index]], counts, settings, false)[0];
   render();
 }
+function current(key) { return participants[participantIndex.get(key)]; }
 function activityFor(key) {
-  if (!counts.has(key)) counts.set(key, { count: 0, comments: 0, latest: 0, url: "" });
+  if (!counts.has(key)) counts.set(key, createActivity());
   return counts.get(key);
 }
-async function scanProfileActivity(sessionKey, signal, checkable) {
-  for (let index = 0; index < checkable.length; index += 1) {
-    const person = checkable[index];
-    const activity = activityFor(person.key);
-    const states = Object.fromEntries(["post", "comment"].map((kind) => [kind, {
-      nextPage: 1, seen: new Set(), fingerprints: new Set(), malformed: false, complete: false, error: "",
-    }]));
-    const wants = { post: settings.minPosts > 0 || settings.minTotal > 0, comment: settings.minComments > 0 || settings.minTotal > 0 };
-    const body = { postUrl: post.url, sessionKey, authorKey: person.key, sourcePage: person.firstCommentPage, cutoff, asOf, periodUnit: settings.periodUnit };
-    const syncCoverage = () => {
-      activity.postsComplete = states.post.complete;
-      activity.commentsComplete = states.comment.complete;
-      activity.postError = states.post.error;
-      activity.commentError = states.comment.error;
-      refreshParticipants();
-    };
-    const consume = (pages) => {
-      for (const page of pages) {
-        const state = states[page.kind];
-        if (!state || page.page !== state.nextPage || !Array.isArray(page.entries)
-          || (page.nextPage !== null && page.nextPage !== page.page + 1)) throw new Error("갤로그 페이지 정보를 확인할 수 없습니다.");
-        if (!wants[page.kind]) continue;
-        if (page.kind === "post") scanPages += 1;
-        else { commentScanPages += 1; activity.commentsChecked = true; }
-        if (page.unavailableReason) {
-          state.error = page.unavailableReason;
-          state.nextPage = null;
-          continue;
-        }
-        if (!page.fingerprint || (page.fingerprint !== "empty" && state.fingerprints.has(page.fingerprint))) {
-          state.error = "갤로그 페이지가 반복되어 활동 확인을 보류합니다.";
-          state.nextPage = null;
-          continue;
-        }
-        state.fingerprints.add(page.fingerprint);
-        state.malformed ||= page.malformed;
-        for (const item of page.entries) {
-          if (state.seen.has(item.id)) continue;
-          const target = parsePostUrl(item.url);
-          if (target.id !== post.id || target.type !== post.type || target.no === post.no
-            || !item.ts || item.ts < cutoff || item.ts > asOf) throw new Error("해당 갤러리의 활동 기록을 확인할 수 없습니다.");
-          state.seen.add(item.id);
-          if (page.kind === "post") activity.count += 1;
-          else activity.comments += 1;
-          if (item.ts > activity.latest) { activity.latest = item.ts; activity.url = target.url; }
-        }
-        state.nextPage = page.nextPage;
-        if (page.boundary || !state.nextPage) {
-          state.complete = !state.malformed && (page.boundary || page.paginationKnown);
-          state.nextPage = null;
-          if (!state.complete) state.error = "갤로그 날짜·페이지 정보가 불완전해 활동 확인을 보류합니다.";
-        }
-      }
-      syncCoverage();
-    };
-    const pending = () => participants.find((entry) => entry.key === person.key)?.status === "pending";
-    try {
-      status(participantLabel(person) + " / 갤로그 공개 확인", "loading", (index + 1) + "/" + checkable.length + "명");
-      const access = await api("/api/comment-activity", { ...body, action: "access" }, signal);
-      if (isReadableProfile(access.profileStatus) && (!Array.isArray(access.pages) || access.pages.length !== 2
-        || access.pages[0].kind !== "post" || access.pages[1].kind !== "comment"
-        || access.pages.some((page) => !isReadableProfile(page.visibility)))) throw new Error("갤로그 글·댓글 공개 여부를 확인할 수 없습니다.");
-      activity.profileStatus = access.profileStatus;
-      if (!isReadableProfile(access.profileStatus)) {
-        activity.profileError = access.unavailableReason || access.error || "갤로그 공개 여부를 확인할 수 없어 보류합니다.";
-      } else {
-        consume(access.pages);
-        let previousKind = "comment";
-        while (pending()) {
-          const available = ["post", "comment"].filter((kind) => wants[kind] && states[kind].nextPage && !states[kind].error
-            && (settings.minTotal > 0 || (kind === "post" ? activity.count < settings.minPosts : activity.comments < settings.minComments)));
-          if (!available.length) break;
-          const kind = available.find((value) => value !== previousKind) || available[0];
-          previousKind = kind;
-          const state = states[kind];
-          if (state.nextPage > MAX_PAGES) {
-            state.error = "갤로그 2,000페이지 제한으로 활동 확인을 보류합니다.";
-            state.nextPage = null;
-            syncCoverage();
-            continue;
-          }
-          status(participantLabel(person) + " / " + (kind === "post" ? "글" : "댓글") + " 활동 확인", "loading", post.id + " · " + state.nextPage + "p");
-          const data = await api("/api/comment-activity", { ...body, kind, startPage: state.nextPage,
-            count: Math.min(3, MAX_PAGES - state.nextPage + 1) }, signal);
-          if (["private", "missing"].includes(data.profileStatus)) {
-            activity.profileStatus = data.profileStatus;
-            activity.profileError = data.unavailableReason;
-            refreshParticipants();
-            break;
-          }
-          if (!Array.isArray(data.pages) || !data.pages.length) {
-            state.error = data.unavailableReason || data.error || "갤로그 활동 목록을 읽지 못해 보류합니다.";
-            state.nextPage = null;
-            syncCoverage();
-            continue;
-          }
-          if (data.profileStatus === "partial") activity.profileStatus = "partial";
-          consume(data.pages);
-          if (data.error || data.profileStatus === "unknown") {
-            state.error = data.error || data.unavailableReason || "갤로그 접근 오류로 확인을 보류합니다.";
-            state.complete = false;
-            state.nextPage = null;
-            syncCoverage();
-          }
-        }
-      }
-    } catch (error) {
-      if (error.name === "AbortError" || error.status === 429) throw error;
-      if (!isReadableProfile(activity.profileStatus)) {
-        activity.profileStatus = "unknown";
-        activity.profileError = error.message;
-      } else {
-        activity.postError ||= error.message;
-        activity.commentError ||= error.message;
-      }
+function scanFor(key) {
+  if (!scans.has(key)) scans.set(key, createActivityScan(settings));
+  return scans.get(key);
+}
+function targetFor(person) { return { authorKey: person.key, sourcePage: sourcePages.get(person.key) || person.firstCommentPage }; }
+function rememberSourcePage(key, page) { if (Number.isInteger(page) && page >= 1 && page <= 100) sourcePages.set(key, page); }
+function countPages(consumed) {
+  scanPages += consumed.post;
+  commentScanPages += consumed.comment;
+}
+function finishParticipant(person) {
+  profileChecked.add(person.key);
+  const assessed = current(person.key);
+  appendLog(participantLabel(person) + " / " + assessed.reason,
+    assessed.status === "eligible" ? "success" : assessed.status === "pending" ? "error" : "info");
+}
+async function scanProfileActivity(signal, people) {
+  const context = { post, cutoff, asOf };
+  const base = { postUrl: post.url, sessionKey, cutoff, asOf, periodUnit: settings.periodUnit };
+  const tries = new Map(people.map((person) => [person.key, { retries: 0, deferrals: 0 }]));
+  const queue = [...people];
+  const deep = [];
+  let done = 0;
+  const settle = (person) => { done += 1; finishParticipant(person); };
+  const fail = (person, message) => { recordActivityFailure(activityFor(person.key), message); refreshParticipant(person.key); settle(person); };
+  // 1) Public-visibility check, several participants per request (one post fetch on the server).
+  while (queue.length) {
+    const batch = queue.splice(0, ACCESS_BATCH);
+    status((batch.length > 1 ? participantLabel(batch[0]) + " 외 " + (batch.length - 1) + "명" : participantLabel(batch[0])) + " / 갤로그 공개 확인",
+      "loading", number(done) + "/" + number(people.length) + "명");
+    let data;
+    try { data = await api("/api/comment-activity", { ...base, action: "access", targets: batch.map(targetFor) }, signal); }
+    catch (error) {
+      if (isFatal(error)) throw error;
+      for (const person of batch) fail(person, error.message);
+      continue;
     }
-    profileScanCount += 1;
-    refreshParticipants();
-    const assessed = participants.find((entry) => entry.key === person.key);
-    appendLog(participantLabel(person) + " / " + assessed.reason,
-      assessed.status === "eligible" ? "success" : assessed.status === "pending" ? "error" : "info");
+    const waiting = new Map(batch.map((person) => [person.key, person]));
+    const retryLater = [];
+    for (const result of Array.isArray(data.results) ? data.results : []) {
+      const person = waiting.get(result?.authorKey);
+      if (!person) continue;
+      waiting.delete(person.key);
+      rememberSourcePage(person.key, result.sourcePage);
+      const entry = tries.get(person.key);
+      if (result.retryable === true && result.profileStatus === "unknown" && entry.retries < TARGET_RETRIES) {
+        entry.retries += 1;
+        retryLater.push(person);
+        continue;
+      }
+      const activity = activityFor(person.key);
+      try { countPages(applyAccessResult(scanFor(person.key), activity, result, context)); }
+      catch (error) { recordActivityFailure(activity, error.message); }
+      refreshParticipant(person.key);
+      if (current(person.key).status === "pending" && isReadableProfile(activity.profileStatus)) deep.push(person);
+      else settle(person);
+    }
+    const deferred = new Set(Array.isArray(data.deferred) ? data.deferred : []);
+    const requeue = [];
+    for (const person of waiting.values()) {
+      const entry = tries.get(person.key);
+      if (deferred.has(person.key) && entry.deferrals < MAX_DEFERRALS) { entry.deferrals += 1; requeue.push(person); }
+      else fail(person, deferred.has(person.key) ? "서버 처리 시간이 계속 초과되어 확인을 보류합니다." : "서버 응답에 참가자 결과가 없어 보류합니다.");
+    }
+    queue.unshift(...requeue);
+    if (data.blocked) await handleBlocked((Number(data.blocked.retryAfter) || 60) * 1000, signal);
+    if (retryLater.length) {
+      if (!queue.length) await wait(retryBackoffMs(Math.max(...retryLater.map((person) => tries.get(person.key).retries))), signal);
+      queue.push(...retryLater);
+    }
+  }
+  // 2) Older list pages only for participants whose verdict is still open.
+  for (const person of deep) {
+    await deepenActivity(person, signal, base, context, tries.get(person.key));
+    settle(person);
+  }
+}
+async function deepenActivity(person, signal, base, context, entry) {
+  const activity = activityFor(person.key);
+  const scan = scanFor(person.key);
+  try {
+    while (current(person.key).status === "pending") {
+      const request = nextActivityRequest(scan, activity, settings);
+      refreshParticipant(person.key);
+      if (!request) break;
+      status(participantLabel(person) + " / " + (request.kind === "post" ? "글" : "댓글") + " 활동 확인", "loading", post.id + " · " + request.startPage + "p");
+      const data = await api("/api/comment-activity", { ...base, targets: [{ ...targetFor(person), ...request }] }, signal);
+      const result = Array.isArray(data.results) ? data.results.find((item) => item?.authorKey === person.key) : null;
+      if (data.blocked) await handleBlocked((Number(data.blocked.retryAfter) || 60) * 1000, signal);
+      if (!result) {
+        if (Array.isArray(data.deferred) && data.deferred.includes(person.key) && entry.deferrals < MAX_DEFERRALS) { entry.deferrals += 1; continue; }
+        throw new Error("서버 응답에 참가자 결과가 없어 보류합니다.");
+      }
+      rememberSourcePage(person.key, result.sourcePage);
+      const outcome = applyActivityResult(scan, activity, request.kind, result, context, { canRetry: entry.retries < TARGET_RETRIES });
+      countPages(outcome.consumed);
+      refreshParticipant(person.key);
+      if (outcome.action === "stop") break;
+      if (outcome.action === "retry") { entry.retries += 1; await wait(retryBackoffMs(entry.retries), signal); }
+    }
+  } catch (error) {
+    if (isFatal(error)) throw error;
+    recordActivityFailure(activity, error.message);
+    refreshParticipant(person.key);
   }
 }
 function selectedParticipants() { return applyParticipantSelection(participants, manualExclusions); }
@@ -429,11 +530,16 @@ function updateReviewControls(review) {
   $("draw-button").hidden = Boolean(drawn);
   $("draw-button").disabled = !review.canDraw || Boolean(drawn);
   $("draw-button").textContent = "포함 " + number(review.included) + "명 중 " + number(review.winnerCount) + "명 추첨하기";
+  const recheckable = commentsCollected && !drawn && review.pending > 0;
+  $("recheck-button").hidden = !recheckable;
+  $("recheck-button").disabled = !recheckable || Boolean(controller) || exportBusy || !review.matches;
+  $("recheck-button").textContent = "미확인 " + number(review.pending) + "명만 다시 확인";
   let message;
   if (controller) message = "참가자와 활동 내역을 확인하고 있습니다. 아직 추첨하지 않습니다.";
+  else if (!completed && recheckable && review.matches) message = "참가자 확인이 중간에 멈췄습니다. 확인된 결과는 유지되며, ‘미확인만 다시 확인’으로 남은 " + number(review.pending) + "명을 이어서 확인할 수 있습니다.";
   else if (!completed) message = "참가자 확인이 끝나지 않았습니다. 참가자 확인을 다시 실행해주세요.";
   else if (!review.matches) message = "설정이 변경되었거나 입력이 올바르지 않습니다. 조건을 바꿨다면 참가자를 다시 확인해주세요.";
-  else if (review.pending) message = "미확인 " + number(review.pending) + "명이 있어 추첨을 보류합니다. 확인되지 않은 참가자를 포함할 수 없습니다.";
+  else if (review.pending) message = "미확인 " + number(review.pending) + "명이 있어 추첨을 보류합니다. 확인되지 않은 참가자를 포함할 수 없습니다. ‘미확인만 다시 확인’을 눌러 해당 참가자만 다시 확인해주세요.";
   else if (drawn) message = "포함 " + number(review.included) + "명의 명단으로 추첨했습니다. 명단을 바꾸려면 참가자를 다시 확인해주세요.";
   else if (!review.included) message = "포함된 참가자가 없습니다. 통과자를 포함하거나 설정을 조정해 다시 확인해주세요.";
   else if (review.included < review.winnerCount) message = "당첨 인원 " + number(review.winnerCount) + "명이 포함 대상 " + number(review.included) + "명보다 많습니다. 위 설정에서 당첨 인원을 줄여주세요.";
@@ -726,6 +832,7 @@ $("usage-close").addEventListener("click", () => $("usage-guide").close());
 $("stop-button").addEventListener("click", () => controller?.abort());
 $("redraw-button").addEventListener("click", redraw);
 $("draw-button").addEventListener("click", confirmDraw);
+$("recheck-button").addEventListener("click", recheckPending);
 $("include-all").addEventListener("click", () => selectAll(true));
 $("exclude-all").addEventListener("click", () => selectAll(false));
 $("participant-search").addEventListener("input", () => renderPreview(selectedParticipants()));

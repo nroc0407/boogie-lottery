@@ -176,3 +176,175 @@ export function pickWinners(participants, count, cryptoSource = globalThis.crypt
   }
   return pool.slice(0, count);
 }
+
+// Gallog activity scan state. Pure functions shared by the browser and the tests.
+export const MAX_PROFILE_PAGES = 2000;
+
+export function activityWants(settings) {
+  return { post: settings.minPosts > 0 || settings.minTotal > 0, comment: settings.minComments > 0 || settings.minTotal > 0 };
+}
+
+export function createActivityScan(settings) {
+  const state = () => ({ nextPage: 1, seen: new Set(), fingerprints: new Set(), malformed: false, complete: false, error: "" });
+  return { wants: activityWants(settings), previousKind: "comment", states: { post: state(), comment: state() } };
+}
+
+export function createActivity() {
+  return { count: 0, comments: 0, latest: 0, url: "" };
+}
+
+export function syncActivityCoverage(scan, activity) {
+  activity.postsComplete = scan.states.post.complete;
+  activity.commentsComplete = scan.states.comment.complete;
+  activity.postError = scan.states.post.error;
+  activity.commentError = scan.states.comment.error;
+}
+
+// Applies gallog pages in order. Returns how many pages of each kind were counted.
+// Throws when the server response does not line up with the scan, so the caller can hold the participant.
+export function consumeActivityPages(scan, activity, pages, { post, cutoff, asOf }) {
+  const consumed = { post: 0, comment: 0 };
+  for (const page of pages) {
+    const state = scan.states[page.kind];
+    if (!state || page.page !== state.nextPage || !Array.isArray(page.entries)
+      || (page.nextPage !== null && page.nextPage !== page.page + 1)) throw new Error("갤로그 페이지 정보를 확인할 수 없습니다.");
+    if (!scan.wants[page.kind]) continue;
+    consumed[page.kind] += 1;
+    if (page.kind === "comment") activity.commentsChecked = true;
+    if (page.unavailableReason) {
+      state.error = page.unavailableReason;
+      state.nextPage = null;
+      continue;
+    }
+    if (!page.fingerprint || (page.fingerprint !== "empty" && state.fingerprints.has(page.fingerprint))) {
+      state.error = "갤로그 페이지가 반복되어 활동 확인을 보류합니다.";
+      state.nextPage = null;
+      continue;
+    }
+    state.fingerprints.add(page.fingerprint);
+    state.malformed ||= page.malformed;
+    for (const item of page.entries) {
+      if (state.seen.has(item.id)) continue;
+      const target = parsePostUrl(item.url);
+      if (target.id !== post.id || target.type !== post.type || target.no === post.no
+        || !item.ts || item.ts < cutoff || item.ts > asOf) throw new Error("해당 갤러리의 활동 기록을 확인할 수 없습니다.");
+      state.seen.add(item.id);
+      if (page.kind === "post") activity.count += 1;
+      else activity.comments += 1;
+      if (item.ts > activity.latest) { activity.latest = item.ts; activity.url = target.url; }
+    }
+    state.nextPage = page.nextPage;
+    if (page.boundary || !state.nextPage) {
+      state.complete = !state.malformed && (page.boundary || page.paginationKnown);
+      state.nextPage = null;
+      if (!state.complete) state.error = "갤로그 날짜·페이지 정보가 불완전해 활동 확인을 보류합니다.";
+    }
+  }
+  syncActivityCoverage(scan, activity);
+  return consumed;
+}
+
+// First response for a participant: both list pages (post, comment) prove the gallog is readable.
+export function applyAccessResult(scan, activity, access, context) {
+  if (isReadableProfile(access.profileStatus) && (!Array.isArray(access.pages) || access.pages.length !== 2
+    || access.pages[0].kind !== "post" || access.pages[1].kind !== "comment"
+    || access.pages.some((page) => !isReadableProfile(page.visibility)))) throw new Error("갤로그 글·댓글 공개 여부를 확인할 수 없습니다.");
+  activity.profileStatus = access.profileStatus;
+  if (!isReadableProfile(access.profileStatus)) {
+    activity.profileError = access.unavailableReason || access.error || "갤로그 공개 여부를 확인할 수 없어 보류합니다.";
+    return { post: 0, comment: 0 };
+  }
+  return consumeActivityPages(scan, activity, access.pages, context);
+}
+
+// Next gallog list request, alternating post/comment lists, or null when nothing can change the verdict.
+export function nextActivityRequest(scan, activity, settings) {
+  for (;;) {
+    const available = ["post", "comment"].filter((kind) => scan.wants[kind] && scan.states[kind].nextPage && !scan.states[kind].error
+      && (settings.minTotal > 0 || (kind === "post" ? activity.count < settings.minPosts : activity.comments < settings.minComments)));
+    if (!available.length) return null;
+    const kind = available.find((value) => value !== scan.previousKind) || available[0];
+    scan.previousKind = kind;
+    const state = scan.states[kind];
+    if (state.nextPage > MAX_PROFILE_PAGES) {
+      state.error = "갤로그 2,000페이지 제한으로 활동 확인을 보류합니다.";
+      state.nextPage = null;
+      syncActivityCoverage(scan, activity);
+      continue;
+    }
+    return { kind, startPage: state.nextPage, count: Math.min(3, MAX_PROFILE_PAGES - state.nextPage + 1) };
+  }
+}
+
+// action: "stop" (verdict fixed by profile state), "retry" (transient failure; request again from state.nextPage) or "continue".
+export function applyActivityResult(scan, activity, kind, data, context, { canRetry = false } = {}) {
+  if (["private", "missing"].includes(data.profileStatus)) {
+    activity.profileStatus = data.profileStatus;
+    activity.profileError = data.unavailableReason;
+    return { action: "stop", consumed: { post: 0, comment: 0 } };
+  }
+  const state = scan.states[kind];
+  const transient = canRetry && data.retryable === true;
+  const consumed = { post: 0, comment: 0 };
+  if (!Array.isArray(data.pages) || !data.pages.length) {
+    if (transient) return { action: "retry", consumed };
+    state.error = data.unavailableReason || data.error || "갤로그 활동 목록을 읽지 못해 보류합니다.";
+    state.nextPage = null;
+    syncActivityCoverage(scan, activity);
+    return { action: "continue", consumed };
+  }
+  if (data.profileStatus === "partial") activity.profileStatus = "partial";
+  Object.assign(consumed, consumeActivityPages(scan, activity, data.pages, context));
+  if (data.error || data.profileStatus === "unknown") {
+    if (transient && state.nextPage) return { action: "retry", consumed };
+    state.error = data.error || data.unavailableReason || "갤로그 접근 오류로 확인을 보류합니다.";
+    state.complete = false;
+    state.nextPage = null;
+    syncActivityCoverage(scan, activity);
+  }
+  return { action: "continue", consumed };
+}
+
+// A failed check never turns into an exclusion: the participant stays unverified with the reason.
+export function recordActivityFailure(activity, message) {
+  if (!isReadableProfile(activity.profileStatus)) {
+    activity.profileStatus = "unknown";
+    activity.profileError = message;
+  } else {
+    activity.postError ||= message;
+    activity.commentError ||= message;
+  }
+}
+
+// Classifies a failed call to our own API. retryable: try again with backoff.
+// rate_limit and upstream_blocked carry the wait the server asked for.
+export function classifyApiFailure({ status = 0, body = null, networkError = false, parseError = false, retryAfter = "" } = {}) {
+  const hint = Number(body?.retryAfter ?? retryAfter);
+  const retryAfterMs = Number.isFinite(hint) && hint > 0 ? Math.min(hint, 300) * 1000 : 0;
+  if (networkError) return { kind: "network", retryable: true, retryAfterMs: 0,
+    message: "네트워크 연결이 끊겨 서버에 요청하지 못했습니다. 연결 상태를 확인해주세요." };
+  if (status === 429) return { kind: "rate_limit", retryable: true, retryAfterMs: retryAfterMs || 60_000,
+    message: "요청이 많아 서버가 잠시 제한했습니다. " + Math.ceil((retryAfterMs || 60_000) / 1000) + "초 뒤 다시 시도해주세요." };
+  if (body?.errorKind === "upstream_blocked") return { kind: "upstream_blocked", retryable: false, retryAfterMs: retryAfterMs || 60_000,
+    message: "디시인사이드가 요청을 일시적으로 제한했습니다. 몇 분 뒤 다시 시도해주세요." };
+  if (parseError) {
+    const timeout = status === 504 || status === 0 || status >= 500;
+    return { kind: timeout ? "timeout" : "invalid_response", retryable: timeout || status === 200,
+      message: timeout ? "서버 처리 시간이 초과되었거나 응답이 중간에 끊겼습니다 (HTTP " + status + ")."
+        : "서버 응답 형식을 읽을 수 없습니다 (HTTP " + status + ")." };
+  }
+  if (body?.errorKind === "time_budget") return { kind: "time_budget", retryable: true, retryAfterMs: 0,
+    message: "서버 처리 시간이 길어 이어서 조회합니다." };
+  if (status === 504) return { kind: "timeout", retryable: true, retryAfterMs: 0,
+    message: body?.error || "서버 처리 시간이 초과되었습니다." };
+  if (status === 502 || status === 503) return { kind: "server", retryable: body?.retryable !== false, retryAfterMs: 0,
+    message: body?.error || "서버가 일시적으로 응답하지 못했습니다 (HTTP " + status + ")." };
+  if (status === 403 && body?.errorKind === "forbidden_origin") return { kind: "forbidden", retryable: false, retryAfterMs: 0,
+    message: body.error || "허용되지 않은 요청 출처입니다." };
+  return { kind: status >= 500 ? "server" : "client", retryable: false, retryAfterMs: 0,
+    message: body?.error || "요청 실패 (HTTP " + status + ")" };
+}
+
+export function retryBackoffMs(attempt, random = Math.random) {
+  return Math.min(6000, 1200 * 2 ** Math.max(0, attempt - 1)) + Math.floor(random() * 400);
+}
