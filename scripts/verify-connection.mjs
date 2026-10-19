@@ -60,6 +60,7 @@ try {
   assert.ok(participantCount > 0 && participantCount <= commentCount);
   assert.ok(eligibleCount >= 2);
   assert.equal(await count("metric-pending"), 0);
+  await page.locator(".participants-panel > summary").click();
   assert.equal(await page.locator("#participant-table tr").count(), participantCount);
   assert.ok(apiResponses.some((item) => item.path === "/api/comments" && item.status === 200 && item.comments > 0));
   assert.ok(apiResponses.some((item) => item.path === "/api/comment-activity" && item.status === 200 && item.posts > 0));

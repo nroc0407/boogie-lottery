@@ -45,7 +45,20 @@ let phase = "idle";
 let statusTone = "idle";
 let elapsedSeconds = 0;
 let lastLog = "";
+let renderQueued = false;
+let renderedDrawId = "";
+const previewCache = new Map();
+const rowCache = new Map();
+let announcedAt = 0;
+let announceTimer = 0;
 
+function setText(element, value) { if (element.textContent !== value) element.textContent = value; }
+// Screen readers hear the status at most every 2s while a check runs, and at once on success/error/stop.
+function announce(message, urgent) {
+  clearTimeout(announceTimer);
+  announceTimer = setTimeout(() => { announcedAt = Date.now(); setText($("status-announcer"), message); },
+    urgent ? 0 : Math.max(0, announcedAt + 2000 - Date.now()));
+}
 function number(value) { return Number(value || 0).toLocaleString("ko-KR"); }
 function date(value) { return value ? new Date(value).toLocaleDateString("ko-KR", { timeZone: "Asia/Seoul" }) : "—"; }
 function assessmentRange() { return settings.periodUnit === "all" ? "기간 제한 없음 · " + date(asOf) + "까지" : date(cutoff) + " ~ " + date(asOf); }
@@ -98,6 +111,7 @@ function status(message, tone = "loading", detail = "") {
   $("status-indicator").textContent = tone === "error" ? "[!]" : tone === "success" ? "[+]" : tone === "stopped" ? "[-]" : "[>]";
   $("status-text").textContent = message;
   $("status-pages").textContent = detail;
+  announce(message + (detail ? " · " + detail : ""), tone !== "loading");
   appendLog(message, tone, detail);
   renderProgress();
 }
@@ -289,6 +303,9 @@ async function run(event) {
   draws = [];
   progressHistory = [];
   manualExclusions.clear();
+  previewCache.clear();
+  rowCache.clear();
+  $("participant-table").replaceChildren();
   $("participant-search").value = "";
   $("export-feedback").textContent = "";
   asOf = Date.now();
@@ -605,7 +622,7 @@ function updateReviewControls(review) {
   else if (!review.included) message = "포함된 참가자가 없습니다. 통과자를 포함하거나 설정을 조정해 다시 확인해주세요.";
   else if (review.included < review.winnerCount) message = "당첨 인원 " + number(review.winnerCount) + "명이 포함 대상 " + number(review.included) + "명보다 많습니다. 위 설정에서 당첨 인원을 줄여주세요.";
   else message = "포함 " + number(review.included) + "명 중 " + number(review.winnerCount) + "명을 뽑습니다. 명단을 확인한 뒤 추첨 버튼을 눌러주세요.";
-  $("review-message").textContent = message;
+  setText($("review-message"), message);
 }
 function exclusionGroup(person) {
   if (person.manuallyExcluded) return ["manual", "운영자 수동 불포함"];
@@ -616,7 +633,17 @@ function exclusionGroup(person) {
   if (person.exclusion === "유동 제외 설정") return ["guest", "유동 제외 설정"];
   return ["activity", "활동 기준 미달"];
 }
+// Preview items and table rows are rebuilt only when what they show changed.
 function previewPerson(person, editable) {
+  const signature = JSON.stringify([person.status, person.reason, person.included, person.automaticStatus, person.profileStatus,
+    person.commentCount, person.firstCommentId, person.name, person.identityCode, editable]);
+  const cached = previewCache.get(person.key);
+  if (cached?.signature === signature) return cached.item;
+  const item = buildPreviewPerson(person, editable);
+  previewCache.set(person.key, { signature, item });
+  return item;
+}
+function buildPreviewPerson(person, editable) {
   const item = document.createElement("li");
   item.className = "preview-person";
   item.dataset.status = person.status;
@@ -660,6 +687,8 @@ function renderPreview(people) {
     const visible = members.filter((person) => !query || participantLabel(person).toLocaleLowerCase("ko-KR").includes(query));
     $(group + "-count").textContent = number(members.length) + "명";
     if (group === "pending") $("pending-group").hidden = members.length === 0;
+    // A collapsed group is filled when it is opened (toggle listener below).
+    if (!$(group + "-group").open) continue;
     const list = $(group + "-list");
     const scrollTop = list.scrollTop;
     const fragment = document.createDocumentFragment();
@@ -711,7 +740,7 @@ function changeSelection(key) {
   if (manualExclusions.has(key)) manualExclusions.delete(key);
   else manualExclusions.add(key);
   appendLog(participantLabel(person) + (manualExclusions.has(key) ? " / 수동 불포함" : " / 수동 포함"));
-  render();
+  renderNow();
   let focusTarget = [...$("preview-panel").querySelectorAll("button[data-select-key]")].find((button) => button.dataset.selectKey === key);
   for (let parent = focusTarget?.parentElement; parent; parent = parent.parentElement) {
     if (parent instanceof HTMLDetailsElement && !parent.open) focusTarget = parent.querySelector(":scope > summary");
@@ -728,42 +757,64 @@ function selectAll(include) {
   render();
 }
 function renderRows(people) {
-  const tbody = $("participant-table");
-  tbody.replaceChildren();
-  for (const person of people) {
-    const row = document.createElement("tr");
-    row.dataset.status = person.status;
-    const nameCell = document.createElement("td");
-    const nameLink = document.createElement("a");
-    nameLink.href = commentLink(person);
-    nameLink.target = "_blank";
-    nameLink.rel = "noopener noreferrer";
-    nameLink.className = "participant-name";
-    nameLink.textContent = participantLabel(person);
-    nameCell.append(nameLink);
-    const cells = [person.identityType === "uid" ? "계정" : person.identityType === "ip" ? "유동" : "미식별",
-      person.profileStatus === "public" ? "공개" : person.profileStatus === "partial" ? "일부공개" : person.profileStatus === "private" ? "비공개" : person.exclusion ? "—" : "미확인",
-      person.commentCount + "개", !person.exclusion && (settings.minPosts > 0 || settings.minTotal > 0) ? number(person.postCount) : "—",
-      person.commentsChecked ? number(person.activityCommentCount) : "—",
-      !person.exclusion && (settings.minPosts > 0 || settings.minComments > 0 || settings.minTotal > 0) ? number(person.totalActivityCount) : "—",
-      date(person.lastActivity)];
-    row.append(nameCell);
-    for (const value of cells) { const cell = document.createElement("td"); cell.textContent = value; row.append(cell); }
-    const resultCell = document.createElement("td");
-    const pill = document.createElement("span");
-    pill.className = "result-pill " + person.status;
-    pill.textContent = person.status === "eligible" ? "포함" : person.status === "pending" ? "미확인" : "불포함";
-    const reason = document.createElement("small");
-    reason.className = "result-reason";
-    reason.textContent = person.reason;
-    resultCell.append(pill, reason);
-    row.append(resultCell);
-    tbody.append(row);
-  }
   $("participants-empty").hidden = participants.length > 0;
+  // The details table starts collapsed; it is built on first open and then patched row by row.
+  if (!document.querySelector(".participants-panel").open) return;
+  const tbody = $("participant-table");
+  const keep = new Set();
+  let cursor = tbody.firstElementChild;
+  for (const person of people) {
+    keep.add(person.key);
+    const signature = JSON.stringify([person.status, person.reason, person.profileStatus, person.commentCount, person.postCount, person.activityCommentCount,
+      person.totalActivityCount, person.commentsChecked, person.lastActivity, person.exclusion, person.name, person.identityCode]);
+    let entry = rowCache.get(person.key);
+    if (entry?.signature !== signature) {
+      const row = buildRow(person);
+      if (entry?.row.isConnected) { if (cursor === entry.row) cursor = row; entry.row.replaceWith(row); }
+      entry = { signature, row };
+      rowCache.set(person.key, entry);
+    }
+    if (entry.row === cursor) cursor = cursor.nextElementSibling;
+    else tbody.insertBefore(entry.row, cursor);
+  }
+  while (cursor) { const next = cursor.nextElementSibling; cursor.remove(); cursor = next; }
+  for (const key of rowCache.keys()) if (!keep.has(key)) rowCache.delete(key);
+}
+function buildRow(person) {
+  const row = document.createElement("tr");
+  row.dataset.status = person.status;
+  const nameCell = document.createElement("td");
+  const nameLink = document.createElement("a");
+  nameLink.href = commentLink(person);
+  nameLink.target = "_blank";
+  nameLink.rel = "noopener noreferrer";
+  nameLink.className = "participant-name";
+  nameLink.textContent = participantLabel(person);
+  nameCell.append(nameLink);
+  const cells = [person.identityType === "uid" ? "계정" : person.identityType === "ip" ? "유동" : "미식별",
+    person.profileStatus === "public" ? "공개" : person.profileStatus === "partial" ? "일부공개" : person.profileStatus === "private" ? "비공개" : person.exclusion ? "—" : "미확인",
+    person.commentCount + "개", !person.exclusion && (settings.minPosts > 0 || settings.minTotal > 0) ? number(person.postCount) : "—",
+    person.commentsChecked ? number(person.activityCommentCount) : "—",
+    !person.exclusion && (settings.minPosts > 0 || settings.minComments > 0 || settings.minTotal > 0) ? number(person.totalActivityCount) : "—",
+    date(person.lastActivity)];
+  row.append(nameCell);
+  for (const value of cells) { const cell = document.createElement("td"); cell.textContent = value; row.append(cell); }
+  const resultCell = document.createElement("td");
+  const pill = document.createElement("span");
+  pill.className = "result-pill " + person.status;
+  pill.textContent = person.status === "eligible" ? "포함" : person.status === "pending" ? "미확인" : "불포함";
+  const reason = document.createElement("small");
+  reason.className = "result-reason";
+  reason.textContent = person.reason;
+  resultCell.append(pill, reason);
+  row.append(resultCell);
+  return row;
 }
 function renderWinners() {
   $("winner-section").hidden = !drawn;
+  // The winner section is a live region: rebuild it only for a new draw so it is announced once.
+  if ((drawn?.id || "") === renderedDrawId) return;
+  renderedDrawId = drawn?.id || "";
   const list = $("winner-list");
   list.replaceChildren();
   if (!drawn) return;
@@ -789,7 +840,14 @@ function renderWinners() {
     + drawn.sequence + "회차" + (drawn.sequence > 1 ? " (재추첨 " + (drawn.sequence - 1) + "회)" : "") + (drawn.reason ? " / 사유: " + drawn.reason : "");
   $("draw-hash").textContent = drawn.rosterHash ? "명단 해시 SHA-256 " + drawn.rosterHash : "명단 해시를 계산하지 못했습니다.";
 }
+// Progress updates arrive many times per second; draw at most once per animation frame.
 function render() {
+  if (renderQueued) return;
+  renderQueued = true;
+  requestAnimationFrame(renderNow);
+}
+function renderNow() {
+  renderQueued = false;
   renderProgress();
   const people = selectedParticipants();
   const eligible = people.filter((person) => person.status === "eligible").length;
@@ -902,6 +960,8 @@ $("recheck-button").addEventListener("click", recheckPending);
 $("include-all").addEventListener("click", () => selectAll(true));
 $("exclude-all").addEventListener("click", () => selectAll(false));
 $("participant-search").addEventListener("input", () => renderPreview(selectedParticipants()));
+for (const id of ["included-group", "excluded-group", "pending-group"]) $(id).addEventListener("toggle", () => { if ($(id).open) render(); });
+document.querySelector(".participants-panel").addEventListener("toggle", (event) => { if (event.currentTarget.open) renderNow(); });
 $("preview-panel").addEventListener("click", (event) => {
   const button = event.target.closest("button[data-select-key]");
   if (button) changeSelection(button.dataset.selectKey);
