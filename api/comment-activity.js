@@ -15,14 +15,28 @@ function profileDate(value) {
   return date.getUTCFullYear() === +found[1] && date.getUTCMonth() === +found[2] - 1 && date.getUTCDate() === +found[3] ? result : 0;
 }
 
+// Visibility label of a list section, e.g. <span class="greybox">비공개</span>. Whitespace, &nbsp; and inline tags inside are ignored.
+const VISIBILITY_LABEL = /<(span|em|strong|b|i)\b[^>]*class=["'][^"']*\b(?:bluebox|greybox|graybox|redbox|whitebox)\b[^"']*["'][^>]*>([\s\S]{0,120}?)<\/\1\s*>/gi;
+// A private list page that shows a notice instead of a label. Only read where no list rows exist.
+const PRIVATE_NOTICE = /비공개\s*(?:로\s*)?(?:설정|처리|전환)\s*(?:된|되어|되었|했|하였|하신)|비공개\s*(?:갤로그|목록|상태)\s*입니다|공개하지\s*않(?:은|았|습니다|도록)/;
+
 export function parseProfileActivity(html, gallery, kind, page, cutoff, asOf) {
   const listMatch = html.match(/<ul\b[^>]*class=["'][^"']*\bcont_listbox\b[^"']*["'][^>]*>([\s\S]*?)<\/ul>/i);
   // Read the section's visibility label before its list, never words inside activity entries.
   const header = listMatch ? html.slice(0, listMatch.index) : html;
-  const labels = [...header.matchAll(/<span\b[^>]*class=["'][^"']*\b(?:bluebox|greybox|graybox|redbox|whitebox)\b[^"']*["'][^>]*>\s*(공개|비공개|일부공개)\s*<\/span>/gi)].map((match) => match[1]);
+  const labels = [...header.matchAll(VISIBILITY_LABEL)].map((match) => text(match[2], 40).replace(/\s+/g, ""))
+    .filter((label) => ["공개", "비공개", "일부공개"].includes(label));
   const base = { kind, page, entries: [], nextPage: null, malformed: false, paginationKnown: false, boundary: false };
-  if (labels.includes("비공개")) return { ...base, visibility: "private", unavailableReason: `갤로그 비공개 (${LABELS[kind]} 목록)` };
-  if (!labels.some((label) => ["공개", "일부공개"].includes(label))) return { ...base, visibility: "unknown", unavailableReason: "갤로그 공개 여부를 확인할 수 없어 보류합니다." };
+  const privatePage = { ...base, visibility: "private", paginationKnown: true, fingerprint: "private", unavailableReason: `갤로그 비공개 (${LABELS[kind]} 목록)` };
+  if (labels.includes("비공개")) return privatePage;
+  if (!labels.some((label) => ["공개", "일부공개"].includes(label))) {
+    // No label: a private notice outside activity rows (header, or a list without data rows) still means private,
+    // so the page never falls through to unknown or the block-screen check.
+    const listRows = listMatch ? /<li\b[^>]*\bdata-no\s*=/i.test(listMatch[1]) : false;
+    const notice = text(header, 4000) + (listMatch && !listRows ? " " + text(listMatch[1], 600) : "");
+    if (!listRows && PRIVATE_NOTICE.test(notice)) return privatePage;
+    return { ...base, visibility: "unknown", unavailableReason: "갤로그 공개 여부를 확인할 수 없어 보류합니다." };
+  }
   const result = { ...base, visibility: labels.includes("일부공개") ? "partial" : "public" };
   const emptyMessage = kind === "post" ? /게시글이 없습니다|등록된 게시글이 없습니다|작성한 게시글이 없습니다/ : /댓글이 없습니다|댓글 내역이 없습니다|등록된 댓글이 없습니다|작성한 댓글이 없습니다/;
   if (!listMatch && emptyMessage.test(text(html, html.length))) return { ...result, paginationKnown: true, fingerprint: "empty" };
@@ -98,12 +112,15 @@ async function resolveParticipant(context, target) {
   return { profileStatus: "unknown", unavailableReason: "참여 댓글의 작성자를 다시 확인할 수 없어 보류합니다." };
 }
 
+// listRule "visible-only": a private list counts as 0 and the other list is still read (access check);
+// only both lists private makes the gallog private. Without it the previous rule applies (either list private).
 async function checkTarget(context, target, pages) {
   const participant = await resolveParticipant(context, target);
   if (!participant.uid) return { ...participant, pages };
   const sourcePage = participant.sourcePage;
   const requests = context.accessOnly ? [{ kind: "post", page: 1 }, { kind: "comment", page: 1 }]
     : Array.from({ length: target.count }, (_, offset) => ({ kind: target.kind, page: target.startPage + offset }));
+  const listVisibility = {};
   for (let index = 0; index < requests.length; index += 1) {
     const request = requests[index];
     const url = new URL(`https://gallog.dcinside.com/${encodeURIComponent(participant.uid)}/${PATHS[request.kind]}`);
@@ -118,13 +135,23 @@ async function checkTarget(context, target, pages) {
       throw error;
     }
     const result = parseProfileActivity(html, context.gallery, request.kind, request.page, context.cutoff, context.asOf);
-    if (result.visibility === "unknown" && looksBlocked(html)) throw markBlocked();
+    if (result.visibility === "unknown") {
+      // Only a page without any visibility label or private notice is checked for a block screen.
+      if (looksBlocked(html)) throw markBlocked();
+      return { profileStatus: "unknown", unavailableReason: result.unavailableReason, pages: [], sourcePage };
+    }
     pages.push(result);
-    if (result.visibility === "private") return { profileStatus: "private", unavailableReason: result.unavailableReason, pages: [], sourcePage };
-    if (result.visibility === "unknown") return { profileStatus: "unknown", unavailableReason: result.unavailableReason, pages: [], sourcePage };
+    listVisibility[request.kind] = result.visibility;
+    if (result.visibility === "private") {
+      if (context.visibleOnly && context.accessOnly) continue;
+      return { profileStatus: "private", unavailableReason: result.unavailableReason, listVisibility, pages: [], sourcePage };
+    }
     if (!context.accessOnly && (result.unavailableReason || result.boundary || !result.nextPage)) break;
   }
-  return { profileStatus: pages.some((page) => page.visibility === "partial") ? "partial" : "public", pages, sourcePage };
+  if (listVisibility.post === "private" && listVisibility.comment === "private") {
+    return { profileStatus: "private", unavailableReason: "갤로그 비공개 (글·댓글 모두)", listVisibility, pages: [], sourcePage };
+  }
+  return { profileStatus: pages.some((page) => page.visibility === "partial") ? "partial" : "public", listVisibility, pages, sourcePage };
 }
 
 function validTarget(target, accessOnly) {
@@ -151,14 +178,15 @@ export default async function handler(req, res, options = {}) {
   const validPeriod = periodUnit === "all" ? cutoff === 0
     : periodUnit === "months" && cutoff > 0 && asOf - cutoff <= 732 * 86400000;
   const accessOnly = body.action === "access";
+  const visibleOnly = body.listRule === "visible-only";
   const batch = Array.isArray(body.targets);
   const targets = (batch ? body.targets : [body]).map((target) => target && typeof target === "object" ? validTarget(target, accessOnly) : null);
   if (!targets.length || targets.length > 5 || targets.some((target) => !target)
     || !Number.isSafeInteger(cutoff) || !Number.isSafeInteger(asOf) || !validPeriod || cutoff > asOf
-    || asOf <= 0 || asOf > Date.now() + 60000 || (body.action && !accessOnly)) {
+    || asOf <= 0 || asOf > Date.now() + 60000 || (body.action && !accessOnly) || (body.listRule !== undefined && !visibleOnly)) {
     respond(res, 400, { error: "갤로그 조회 대상·기간·페이지가 올바르지 않습니다.", errorKind: "bad_request" }); return;
   }
-  const context = { gallery, sessionKey: body.sessionKey, cutoff, asOf, accessOnly, source: null,
+  const context = { gallery, sessionKey: body.sessionKey, cutoff, asOf, accessOnly, visibleOnly, source: null,
     budget, pauseMs: options.pauseMs ?? 300 };
   if (!batch) {
     // Single-participant form kept for open tabs from the previous release.
