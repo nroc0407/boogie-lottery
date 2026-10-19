@@ -1,5 +1,6 @@
 import { parsePostInput, parsePostUrl } from "../public/lottery-core.js";
-import { requestBody, respond, attr, decode, text, writerIdentity, authorHash, dcFetch, bodyText, pause, createBudget, errorResponse, UpstreamError } from "../lib/dcinside.js";
+import { requestBody, respond, attr, decode, text, writerIdentity, authorHash, dcFetch, bodyText, pause, createBudget, errorResponse, UpstreamError,
+  postSourceCache, commentPageCache, looksBlocked, markBlocked } from "../lib/dcinside.js";
 
 function input(html, name) {
   const tag = html.match(new RegExp("<input\\b[^>]*(?:id|name)=[\"']" + name + "[\"'][^>]*>", "i"))?.[0] || "";
@@ -26,7 +27,17 @@ export function nextPage(pagination, page) {
   return [...values, ...dataValues].some((value) => value > page) ? page + 1 : null;
 }
 
-export async function loadCommentSource(gallery, sessionKey, { budget } = {}) {
+function withPost(source, sessionKey) {
+  const { uid, ip, name } = source.writer;
+  return { ...source, post: { ...source.gallery, title: source.title, authorKey: authorHash(writerIdentity(uid, ip, name), source.gallery, sessionKey) } };
+}
+
+// The post page gives the comment token, cookie and real gallery path. It is cached briefly per
+// instance (keyed by the requested URL); the author key is derived per run from the session key.
+export async function loadCommentSource(gallery, sessionKey, { budget, cache = true } = {}) {
+  const cached = cache ? postSourceCache.get(gallery.url) : undefined;
+  if (cached) return withPost(cached, sessionKey);
+  const requested = gallery.url;
   const original = gallery;
   const visited = new Set();
   let detail, html, title, token;
@@ -42,6 +53,7 @@ export async function loadCommentSource(gallery, sessionKey, { budget } = {}) {
     // Read only its literal destination; never execute upstream JavaScript.
     const redirect = detail.headers.get("location") || html.match(/(?:window\.)?location\.replace\(\s*["']([^"']+)["']\s*\)/i)?.[1]
       || html.match(/(?:window\.)?location\.href\s*=\s*["']([^"']+)["']/i)?.[1];
+    if (!redirect && looksBlocked(html)) throw markBlocked();
     if (!redirect) throw new Error("게시글 또는 댓글 정보를 읽지 못했습니다. 삭제·비공개·접근 제한 여부를 확인하고, 공개 글이라면 잠시 뒤 다시 시도해주세요.");
     const target = new URL(decode(redirect), gallery.url);
     if (target.protocol !== "https:") throw new Error("게시글 이동 주소를 확인할 수 없습니다.");
@@ -54,14 +66,21 @@ export async function loadCommentSource(gallery, sessionKey, { budget } = {}) {
   const name = decode(attr(writerTag, "data-nick")).trim();
   const uid = decode(attr(writerTag, "data-uid")).trim();
   const ip = decode(attr(writerTag, "data-ip")).trim();
-  const post = { ...gallery, title, authorKey: authorHash(writerIdentity(uid, ip, name), gallery, sessionKey) };
   const cookie = detail.headers.getSetCookie().map((value) => value.split(";")[0]).join("; ");
   const form = { board_type: input(html, "board_type"), _GALLTYPE_: input(html, "_GALLTYPE_"), secret_article_key: input(html, "secret_article_key") };
-  return { gallery, token, form, cookie, post };
+  const source = { requested, gallery, title, token, form, cookie, writer: { uid, ip, name } };
+  if (cache) postSourceCache.set(requested, source);
+  return withPost(source, sessionKey);
 }
 
-export async function readCommentPage(source, page, { budget } = {}) {
+// fresh: always ask DC (comment collection). Otherwise a page read in the last 30s may be reused.
+export async function readCommentPage(source, page, { budget, fresh = true } = {}) {
   const { gallery, token, form: fields, cookie } = source;
+  const cacheKey = gallery.url + "#" + page;
+  if (!fresh) {
+    const cached = commentPageCache.get(cacheKey);
+    if (cached) return cached;
+  }
   const form = new URLSearchParams({ id: gallery.id, no: gallery.no, cmt_id: gallery.id, cmt_no: gallery.no,
     e_s_n_o: token, comment_page: String(page), sort: "N", prevCnt: "", board_type: fields.board_type,
     _GALLTYPE_: fields._GALLTYPE_, focus_cno: "", focus_pno: "", secret_article_key: fields.secret_article_key, clean: "", nptest: "" });
@@ -71,7 +90,13 @@ export async function readCommentPage(source, page, { budget } = {}) {
   }, body: form.toString() });
   const raw = await bodyText(response);
   let data;
-  try { data = JSON.parse(raw); } catch { throw new UpstreamError("댓글 응답을 읽지 못했습니다. 잠시 뒤 다시 시도해주세요.", "upstream_format", { retryable: true }); }
+  try { data = JSON.parse(raw); }
+  catch {
+    if (looksBlocked(raw)) throw markBlocked();
+    // An expired token or cookie also ends here; drop the cached post page so a retry refreshes it.
+    if (source.requested) postSourceCache.delete(source.requested);
+    throw new UpstreamError("댓글 응답을 읽지 못했습니다. 잠시 뒤 다시 시도해주세요.", "upstream_format", { retryable: true });
+  }
   if (data.comments === null && Number(data.total_cnt) === 0) data.comments = [];
   if (!Array.isArray(data.comments)) throw new Error("댓글 응답 형식이 달라 수집을 중단했습니다.");
   const next = nextPage(data.pagination, page);
@@ -79,7 +104,9 @@ export async function readCommentPage(source, page, { budget } = {}) {
   if (page === 1 && !next && Number(data.total_cnt) > data.comments.filter((item) => /^[1-9]\d*$/.test(String(item.no || ""))).length) {
     throw new Error("전체 댓글의 페이지 정보를 확인할 수 없어 추첨을 보류합니다.");
   }
-  return { ...data, nextPage: next };
+  const result = { ...data, nextPage: next };
+  commentPageCache.set(cacheKey, result);
+  return result;
 }
 
 export default async function handler(req, res, options = {}) {

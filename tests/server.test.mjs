@@ -120,3 +120,55 @@ test("total_cnt보다 댓글이 적은데 다음 페이지가 없으면 수집�
   payload = { comments: null, total_cnt: 0 };
   assert.deepEqual((await readCommentPage(source, 1)).comments, []);
 });
+
+test("같은 인스턴스의 연속 활동 조회는 게시글·댓글 페이지를 다시 받지 않음", async (t) => {
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (url) => {
+    calls.push(String(url));
+    if (String(url).includes("/board/comment/")) return Response.json({ comments: ["alpha", "beta"].map((uid, index) => ({ no: String(index + 1), user_id: uid, name: "ㅇㅇ", memo: "참여" })), total_cnt: 2 });
+    if (String(url).startsWith("https://gallog.")) return new Response(profile(String(url).includes("/comment") ? "comment" : "posting"));
+    return new Response(postHtml);
+  });
+  const first = await call(activityHandler, activityBody({ action: "access", targets: [{ authorKey: keyFor("alpha", "1"), sourcePage: 1 }, { authorKey: keyFor("beta", "2"), sourcePage: 1 }] }));
+  assert.equal(first.body.results.length, 2);
+  const second = await call(activityHandler, activityBody({ targets: [{ authorKey: keyFor("beta", "2"), sourcePage: 1, kind: "post", startPage: 2, count: 1 }] }));
+  assert.equal(second.body.results[0].pages[0].page, 2);
+  assert.equal(calls.filter((url) => url.includes("/board/view/")).length, 1, "Post page fetched once");
+  assert.equal(calls.filter((url) => url.includes("/board/comment/")).length, 1, "Comment page fetched once");
+  assert.equal(calls.filter((url) => url.startsWith("https://gallog.")).length, 5);
+});
+
+test("디시 403·429·차단 페이지는 즉시 멈추고 대기 시간을 알려주며 그동안 재요청하지 않음", async (t) => {
+  let mode = "gallog429";
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (url) => {
+    calls.push(String(url));
+    if (mode === "post403") return new Response("forbidden", { status: 403 });
+    if (mode === "postBlockPage") return new Response("<html><body>비정상적인 접근이 감지되었습니다.</body></html>");
+    if (String(url).includes("/board/comment/")) return Response.json({ comments: ["alpha", "beta"].map((uid, index) => ({ no: String(index + 1), user_id: uid, name: "ㅇㅇ", memo: "참여" })), total_cnt: 2 });
+    if (String(url).startsWith("https://gallog.")) return mode === "gallog429" ? new Response("slow down", { status: 429, headers: { "Retry-After": "90" } })
+      : new Response("<p>자동 입력 방지 문자를 입력해주세요</p>");
+    return new Response(postHtml);
+  });
+  const keys = [keyFor("alpha", "1"), keyFor("beta", "2")];
+  const body = activityBody({ action: "access", targets: keys.map((authorKey) => ({ authorKey, sourcePage: 1 })) });
+  const blocked = await call(activityHandler, body);
+  assert.equal(blocked.status, 200);
+  assert.deepEqual(blocked.body.results, []);
+  assert.deepEqual(blocked.body.deferred, keys);
+  assert.equal(blocked.body.blocked.retryAfter, 90);
+  const before = calls.length;
+  const again = await call(commentsHandler, { postUrl: target.url, sessionKey, startPage: 1, count: 1 });
+  assert.equal(again.status, 503);
+  assert.equal(again.body.errorKind, "upstream_blocked");
+  assert.ok(Number(again.headers["retry-after"]) > 0);
+  assert.equal(calls.length, before, "No upstream request during the cool-down");
+  for (const [next, endpoint] of [["post403", "comments"], ["postBlockPage", "comments"], ["gallogPage", "activity"]]) {
+    resetServerState();
+    mode = next;
+    const result = endpoint === "comments" ? await call(commentsHandler, { postUrl: target.url, sessionKey, startPage: 1, count: 1 })
+      : await call(activityHandler, { ...body, targets: body.targets.slice(0, 1) });
+    if (endpoint === "comments") { assert.equal(result.status, 503, next); assert.equal(result.body.errorKind, "upstream_blocked", next); }
+    else assert.ok(result.body.blocked, next);
+  }
+});

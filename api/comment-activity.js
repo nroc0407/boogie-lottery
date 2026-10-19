@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { parsePostUrl } from "../public/lottery-core.js";
 import { loadCommentSource, readCommentPage, parseComments } from "./comments.js";
-import { requestBody, respond, attr, decode, text, gallogFetch, bodyText, pause, createBudget, errorResponse } from "../lib/dcinside.js";
+import { requestBody, respond, attr, decode, text, gallogFetch, bodyText, pause, createBudget, errorResponse, looksBlocked, markBlocked } from "../lib/dcinside.js";
 
 const MAX_PROFILE_PAGES = 2000;
 const PATHS = { post: "posting", comment: "comment" };
@@ -71,7 +71,7 @@ export function parseProfileActivity(html, gallery, kind, page, cutoff, asOf) {
 // comment to find the gallog ID, so this endpoint cannot be used to scan arbitrary gallogs.
 async function resolveParticipant(context, target) {
   context.source ||= await loadCommentSource(context.gallery, context.sessionKey, { budget: context.budget });
-  const data = await readCommentPage(context.source, target.sourcePage, { budget: context.budget });
+  const data = await readCommentPage(context.source, target.sourcePage, { budget: context.budget, fresh: false });
   const validIds = new Set(parseComments(data, context.source.gallery, context.sessionKey).filter((item) => item.authorKey === target.authorKey).map((item) => item.id));
   const raw = data.comments.find((item) => validIds.has(String(item.no)));
   if (!raw) return { profileStatus: "unknown", unavailableReason: "참여 댓글의 작성자를 다시 확인할 수 없어 보류합니다." };
@@ -100,6 +100,7 @@ async function checkTarget(context, target, pages) {
       throw error;
     }
     const result = parseProfileActivity(html, context.gallery, request.kind, request.page, context.cutoff, context.asOf);
+    if (result.visibility === "unknown" && looksBlocked(html)) throw markBlocked();
     pages.push(result);
     if (result.visibility === "private") return { profileStatus: "private", unavailableReason: result.unavailableReason, pages: [] };
     if (result.visibility === "unknown") return { profileStatus: "unknown", unavailableReason: result.unavailableReason, pages: [] };

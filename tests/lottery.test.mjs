@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { webcrypto } from "node:crypto";
 import { parsePostInput, parsePostUrl, sixMonthCutoff, evaluationCutoff, periodLabel, participantLabel, applyParticipantSelection, collectParticipants, evaluateParticipants, pickWinners } from "../public/lottery-core.js";
@@ -6,10 +6,12 @@ import commentsHandler, { parseComments, nextPage, loadCommentSource } from "../
 import { parsePosts } from "../api/pages.js";
 import activityHandler, { parseProfileActivity } from "../api/comment-activity.js";
 import { createRecord } from "../public/result-export.js";
+import { resetServerState } from "../lib/dcinside.js";
 
 const gallery = { id: "aidevelop", type: "mgallery" };
 const sessionKey = "a".repeat(64);
 const options = { includeGuests: false, includeReplies: true, excludeAuthor: true, keyword: "" };
+beforeEach(() => resetServerState());
 
 test("게시글 URL은 일반·마이너·미니만 허용하고 다른 호스트와 경로는 거부", () => {
   assert.equal(parsePostUrl("https://gall.dcinside.com/mgallery/board/view/?id=aidevelop\\&no=3524").no, "3524");
@@ -52,6 +54,7 @@ test("공유 주소의 디시 이동 안내를 따라 같은 글의 종류와 �
     method = redirectMethod;
     for (const galleryKind of ["mgallery", "mini"]) {
       kind = galleryKind;
+      resetServerState();
       let body;
       const res = { setHeader() {}, end(value) { body = JSON.parse(value); } };
       await commentsHandler({ method: "POST", headers: {}, body: {
