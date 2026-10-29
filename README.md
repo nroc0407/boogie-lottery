@@ -79,3 +79,5 @@ GitHub Actions 자동 검사는 [docs/ci-workflow.yml.example](docs/ci-workflow.
 ## 확인
 
 `npm test`(`node --test tests/*.test.mjs`)로 URL 제한, 월말 6개월 계산, 댓글 중복·동명 계정 처리, 미확인 보류, 중복 없는 추첨, 댓글 페이지 이동(`lottery.test.mjs`), 갤로그 집계·완료·보류 규칙(`scan.test.mjs`), 재시도 분류·명단 해시(`core.test.mjs`), 한쪽 목록 비공개 판정(두 모드·모두 비공개·일부공개+비공개)과 비공개 목록 페이지 인식·다른 목록 이어 읽기·차단/미확인 오판 방지·이전 클라이언트 호환(`visibility.test.mjs`), 수동 판정 우선·되돌리기·재확인 유지와 수동 판정·목록 공개 상태가 반영되는 순서 무관 명단 해시·JSON 검증(`override.test.mjs`), 시간 예산과 부분 결과·인접 페이지 재탐색·출처 확인·차단 감지·캐시·`total_cnt` 검증·로그 내용(`server.test.mjs`)을 확인합니다. `scripts/verify-connection.mjs`는 Playwright를 사용해 예시 글의 실제 댓글 수집부터 활동 조회, 당첨자 표시, CSV 다운로드까지 확인합니다. 검증 산출물은 Git에서 제외한 `artifacts/`에 둡니다.
+
+`npm run test:browser`(`tests/browser.e2e.mjs`)는 실제 화면과 실제 API 처리기를 로컬에 띄우고, 설치된 Chrome으로 참가자 확인 → 포함·불포함 검토 → 추첨까지 누릅니다. 디시인사이드 응답은 테스트 안의 고정 자료(댓글 4개·참가자 3명, 그중 갤로그 비공개 1명)로 바꾸므로 실제 갤러리·갤로그에는 요청하지 않습니다. 비공개 참가자가 불포함으로 가는지, 당첨자가 포함 인원 안에서 나오는지, 페이지 오류가 없는지 확인합니다. `playwright-core`(개발 의존성)만 쓰고 브라우저는 따로 내려받지 않습니다.
